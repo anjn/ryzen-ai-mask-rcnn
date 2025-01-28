@@ -11,7 +11,9 @@ import argparse
 import cv2
 import matplotlib.pyplot as plt
 import os
+import time
 import concurrent.futures
+import queue
 from queue import Queue
 from threading import Thread
 import threading
@@ -190,19 +192,39 @@ def mask_to_rle(binary_mask, height, width):
         height: Original image height
         width: Original image width
     Returns:
-        RLE encoded mask
+        RLE encoded mask in COCO format
     """
-    # Fortranオーダーで1次元配列に変換
+    # Fortranオーダーで1次元配列に変換（列優先）
     mask_array = binary_mask.ravel(order='F')
     
-    # 値の変化する位置を検出
-    diff = np.diff(np.concatenate([[0], mask_array, [0]]))
-    runs_starts = np.where(diff != 0)[0]
+    # 最初が1の場合、0の長さは0から開始
+    counts = []
+    if mask_array[0] == 1:
+        counts.append(0)
     
-    # 連続する長さを計算
-    runs_lengths = np.diff(runs_starts)
+    # 連続する同じ値の長さを計算
+    current_value = mask_array[0]
+    current_count = 1
     
-    return {'counts': runs_lengths.tolist(), 'size': [height, width]}
+    for value in mask_array[1:]:
+        if value == current_value:
+            current_count += 1
+        else:
+            counts.append(current_count)
+            current_value = value
+            current_count = 1
+    
+    # 最後の連続部分を追加
+    counts.append(current_count)
+    
+    # 最後が1で終わる場合、0の長さ0を追加
+    if current_value == 1:
+        counts.append(0)
+    
+    # 合計が画像のピクセル数と一致することを確認
+    assert sum(counts) == height * width, f"RLE counts sum ({sum(counts)}) does not match image size ({height * width})"
+    
+    return {'counts': counts, 'size': [height, width]}
 
 class MaskProcessor:
     """
@@ -220,7 +242,7 @@ class MaskProcessor:
     def _process_queue(self):
         while self.processing or not self.queue.empty():
             try:
-                task = self.queue.get(timeout=1.0)
+                task = self.queue.get(timeout=3.0)
                 if task is None:
                     break
                 
@@ -229,7 +251,7 @@ class MaskProcessor:
                 with self.lock:
                     self.results[idx] = future
                 
-            except Queue.Empty:
+            except queue.Empty:
                 continue
 
     def submit_mask(self, idx, binary_mask, height, width):
@@ -253,6 +275,7 @@ def process_pending_results(pending_results, mask_processor):
     Process pending results and get their RLE masks
     """
     processed_results = []
+    new_pending_results = []
     for item in pending_results:
         mask_id = item['mask_id']
         result = item['result']
@@ -262,8 +285,10 @@ def process_pending_results(pending_results, mask_processor):
         if rle is not None:
             result['segmentation'] = rle
             processed_results.append(result)
+        else:
+            new_pending_results.append(item)
     
-    return processed_results
+    return processed_results, new_pending_results
 
 def evaluate_model(model, coco_gt, device, args, category_mapping):
     """
@@ -351,11 +376,14 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
 
             # 一定数のマスクが処理されるのを待つ
             if len(pending_results) >= 1000:
-                results.extend(process_pending_results(pending_results, mask_processor))
-                pending_results = []
+                processed_results, pending_results = process_pending_results(pending_results, mask_processor)
+                results.extend(processed_results)
 
     # 残りの結果を処理
-    results.extend(process_pending_results(pending_results, mask_processor))
+    while len(pending_results) > 0:
+        processed_results, pending_results = process_pending_results(pending_results, mask_processor)
+        results.extend(processed_results)
+        time.sleep(0.1)
     mask_processor.shutdown()
 
     print(f"\nPrediction Statistics:")
