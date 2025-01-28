@@ -11,6 +11,10 @@ import argparse
 import cv2
 import matplotlib.pyplot as plt
 import os
+import concurrent.futures
+from queue import Queue
+from threading import Thread
+import threading
 
 class COCOEvalDataset(Dataset):
     """
@@ -155,141 +159,6 @@ def visualize_prediction(image, prediction, category_mapping, coco_gt, output_pa
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
     cv2.imwrite(output_path, cv2.cvtColor(vis_image, cv2.COLOR_RGB2BGR))
 
-def evaluate_model(model, coco_gt, device, args, category_mapping):
-    """
-    Evaluate model on COCO dataset with batch processing
-    Args:
-        model: Model to evaluate
-        coco_gt: COCO ground truth object
-        device: Device to run evaluation on
-        args: Command line arguments containing max_samples and img_dir
-        category_mapping: Mapping from model category indices to COCO category IDs
-    Returns:
-        box_map: Mean Average Precision for bounding boxes
-        mask_map: Mean Average Precision for masks
-    """
-    # Initialize list to store detections
-    results = []
-    total_predictions = 0
-    filtered_predictions = 0
-
-    print("\nEvaluation Settings:")
-    print(f"Score threshold: {args.score_threshold}")
-    print(f"Max samples: {args.max_samples}")
-    print(f"Batch size: {args.batch_size}")
-
-    # Create dataset and dataloader
-    preprocess_transforms = MaskRCNN_ResNet50_FPN_V2_Weights.COCO_V1.transforms()
-    dataset = COCOEvalDataset(coco_gt, args.img_dir, transforms=preprocess_transforms)
-    
-    # Limit dataset size if max_samples is specified
-    if args.max_samples is not None:
-        dataset.img_ids = dataset.img_ids[:args.max_samples]
-    
-    dataloader = DataLoader(
-        dataset,
-        batch_size=args.batch_size,
-        shuffle=False,
-        num_workers=args.num_workers,
-        collate_fn=collate_fn
-    )
-
-    # Create visualization directory if needed
-    if args.visualize:
-        os.makedirs(args.visualization_dir, exist_ok=True)
-
-    # Process batches
-    with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Processing batches"):
-            # Move images to device and prepare batch
-            images = [img.to(device) for img in batch['images']]
-            
-            # Forward pass
-            predictions = model(images)
-            
-            # Process each image in the batch
-            for img_idx, (pred, img_id, img_info) in enumerate(zip(predictions, batch['img_ids'], batch['img_infos'])):
-                # Visualize and save results if enabled
-                if args.visualize:
-                    output_path = os.path.join(args.visualization_dir, f'result_{img_id}.png')
-                    visualize_prediction(batch['images'][img_idx], pred, category_mapping, coco_gt, output_path, args)
-                
-                # Convert predictions to COCO format
-                boxes = pred['boxes'].cpu().numpy()
-                scores = pred['scores'].cpu().numpy()
-                labels = pred['labels'].cpu().numpy()
-                masks = pred['masks'].cpu().numpy()
-                
-                total_predictions += len(boxes)
-                
-                # Convert masks to RLE format
-                for box, score, label, mask in zip(boxes, scores, labels, masks):
-                    if score < args.score_threshold:  # Skip low confidence predictions
-                        continue
-                    
-                    # Map model category index to COCO category ID
-                    coco_category_id = category_mapping.get(label.item(), -1)
-                    if coco_category_id == -1:  # Skip if no valid mapping
-                        continue
-                    
-                    filtered_predictions += 1
-                    # Ensure mask is binary
-                    binary_mask = (mask[0] > 0.5).astype(np.uint8)
-                    rle = mask_to_rle(binary_mask, img_info['height'], img_info['width'])
-                    
-                    # Convert box from [x1, y1, x2, y2] to COCO format [x, y, width, height]
-                    x1, y1, x2, y2 = box.tolist()
-                    width = x2 - x1
-                    height = y2 - y1
-                    result = {
-                        'image_id': img_id,
-                        'category_id': coco_category_id,
-                        'bbox': [x1, y1, width, height],
-                        'score': float(score.item()),
-                        'segmentation': rle
-                    }
-                    results.append(result)
-    
-    # Print prediction statistics
-    print(f"\nPrediction Statistics:")
-    print(f"Total predictions across all images: {total_predictions}")
-    print(f"Predictions after score threshold: {filtered_predictions}")
-    print(f"Average predictions per image: {total_predictions / len(dataset):.2f}")
-    print(f"Average filtered predictions per image: {filtered_predictions / len(dataset):.2f}")
-
-    # Save results
-    with open(args.output_path, 'w') as f:
-        json.dump(results, f)
-    
-    print(f"\nSaved {len(results)} predictions to {args.output_path}")
-    if args.visualize:
-        print(f"Saved visualization results to {args.visualization_dir}")
-    
-    if len(results) == 0:
-        print("WARNING: No predictions passed the score threshold!")
-        return 0.0, 0.0
-    
-    # Evaluate bounding boxes
-    coco_dt = coco_gt.loadRes(args.output_path)
-    coco_eval = COCOeval(coco_gt, coco_dt, 'bbox')
-    if args.max_samples is not None:
-        coco_eval.params.imgIds = dataset.img_ids
-    coco_eval.evaluate()
-    coco_eval.accumulate()
-    coco_eval.summarize()
-    box_map = coco_eval.stats[0]  # mAP@IoU=0.50:0.95
-    
-    # Evaluate segmentation
-    coco_eval = COCOeval(coco_gt, coco_dt, 'segm')
-    if args.max_samples is not None:
-        coco_eval.params.imgIds = dataset.img_ids
-    coco_eval.evaluate()
-    coco_eval.accumulate()
-    coco_eval.summarize()
-    mask_map = coco_eval.stats[0]  # mAP@IoU=0.50:0.95
-
-    return box_map, mask_map
-
 def calculate_iou(box1, box2):
     """
     Calculate IoU between two boxes in format [x1, y1, x2, y2]
@@ -315,7 +184,7 @@ def calculate_iou(box1, box2):
 
 def mask_to_rle(binary_mask, height, width):
     """
-    Convert a binary mask to RLE format
+    Convert a binary mask to RLE format - Optimized version
     Args:
         binary_mask: A binary mask (0 or 1 values)
         height: Original image height
@@ -323,22 +192,211 @@ def mask_to_rle(binary_mask, height, width):
     Returns:
         RLE encoded mask
     """
-    rle = {'counts': [], 'size': [height, width]}
-    counts = rle.get('counts')
+    # Fortranオーダーで1次元配列に変換
+    mask_array = binary_mask.ravel(order='F')
     
-    last_elem = 0
-    running_length = 0
+    # 値の変化する位置を検出
+    diff = np.diff(np.concatenate([[0], mask_array, [0]]))
+    runs_starts = np.where(diff != 0)[0]
     
-    for elem in binary_mask.ravel(order='F'):
-        if elem == last_elem:
-            running_length += 1
-        else:
-            counts.append(running_length)
-            running_length = 1
-            last_elem = elem
-    counts.append(running_length)
+    # 連続する長さを計算
+    runs_lengths = np.diff(runs_starts)
     
-    return rle
+    return {'counts': runs_lengths.tolist(), 'size': [height, width]}
+
+class MaskProcessor:
+    """
+    マスク処理を並列化するためのクラス
+    """
+    def __init__(self, max_workers=None):
+        self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
+        self.queue = Queue()
+        self.results = {}
+        self.processing = True
+        self.worker_thread = Thread(target=self._process_queue)
+        self.worker_thread.start()
+        self.lock = threading.Lock()
+
+    def _process_queue(self):
+        while self.processing or not self.queue.empty():
+            try:
+                task = self.queue.get(timeout=1.0)
+                if task is None:
+                    break
+                
+                idx, binary_mask, height, width = task
+                future = self.executor.submit(mask_to_rle, binary_mask, height, width)
+                with self.lock:
+                    self.results[idx] = future
+                
+            except Queue.Empty:
+                continue
+
+    def submit_mask(self, idx, binary_mask, height, width):
+        self.queue.put((idx, binary_mask, height, width))
+
+    def get_result(self, idx):
+        with self.lock:
+            future = self.results.get(idx)
+            if future is None:
+                return None
+            return future.result()
+
+    def shutdown(self):
+        self.processing = False
+        self.queue.put(None)
+        self.worker_thread.join()
+        self.executor.shutdown()
+
+def process_pending_results(pending_results, mask_processor):
+    """
+    Process pending results and get their RLE masks
+    """
+    processed_results = []
+    for item in pending_results:
+        mask_id = item['mask_id']
+        result = item['result']
+        
+        # Get RLE mask from processor
+        rle = mask_processor.get_result(mask_id)
+        if rle is not None:
+            result['segmentation'] = rle
+            processed_results.append(result)
+    
+    return processed_results
+
+def evaluate_model(model, coco_gt, device, args, category_mapping):
+    """
+    Evaluate model on COCO dataset with batch processing and parallel mask processing
+    """
+    results = []
+    total_predictions = 0
+    filtered_predictions = 0
+
+    print("\nEvaluation Settings:")
+    print(f"Score threshold: {args.score_threshold}")
+    print(f"Max samples: {args.max_samples}")
+    print(f"Batch size: {args.batch_size}")
+
+    # Create dataset and dataloader
+    preprocess_transforms = MaskRCNN_ResNet50_FPN_V2_Weights.COCO_V1.transforms()
+    dataset = COCOEvalDataset(coco_gt, args.img_dir, transforms=preprocess_transforms)
+    
+    if args.max_samples is not None:
+        dataset.img_ids = dataset.img_ids[:args.max_samples]
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=collate_fn
+    )
+
+    if args.visualize:
+        os.makedirs(args.visualization_dir, exist_ok=True)
+
+    # Initialize mask processor with number of workers
+    mask_processor = MaskProcessor(max_workers=args.num_workers * 2)
+    mask_count = 0
+    pending_results = []
+
+    with torch.no_grad():
+        for batch in tqdm(dataloader, desc="Processing batches"):
+            images = [img.to(device) for img in batch['images']]
+            predictions = model(images)
+            
+            for img_idx, (pred, img_id, img_info) in enumerate(zip(predictions, batch['img_ids'], batch['img_infos'])):
+                if args.visualize:
+                    output_path = os.path.join(args.visualization_dir, f'result_{img_id}.png')
+                    visualize_prediction(batch['images'][img_idx], pred, category_mapping, coco_gt, output_path, args)
+                
+                boxes = pred['boxes'].cpu().numpy()
+                scores = pred['scores'].cpu().numpy()
+                labels = pred['labels'].cpu().numpy()
+                masks = pred['masks'].cpu().numpy()
+                
+                total_predictions += len(boxes)
+                
+                # 並列処理のためのマスク変換とリザルト作成
+                for box, score, label, mask in zip(boxes, scores, labels, masks):
+                    if score < args.score_threshold:
+                        continue
+                    
+                    coco_category_id = category_mapping.get(label.item(), -1)
+                    if coco_category_id == -1:
+                        continue
+                    
+                    filtered_predictions += 1
+                    binary_mask = (mask[0] > 0.5).astype(np.uint8)
+                    
+                    # マスク処理をキューに追加
+                    mask_processor.submit_mask(mask_count, binary_mask, img_info['height'], img_info['width'])
+                    
+                    # 結果を保存
+                    x1, y1, x2, y2 = box.tolist()
+                    width = x2 - x1
+                    height = y2 - y1
+                    
+                    pending_results.append({
+                        'mask_id': mask_count,
+                        'result': {
+                            'image_id': img_id,
+                            'category_id': coco_category_id,
+                            'bbox': [x1, y1, width, height],
+                            'score': float(score.item())
+                        }
+                    })
+                    mask_count += 1
+
+            # 一定数のマスクが処理されるのを待つ
+            if len(pending_results) >= 1000:
+                results.extend(process_pending_results(pending_results, mask_processor))
+                pending_results = []
+
+    # 残りの結果を処理
+    results.extend(process_pending_results(pending_results, mask_processor))
+    mask_processor.shutdown()
+
+    print(f"\nPrediction Statistics:")
+    print(f"Total predictions across all images: {total_predictions}")
+    print(f"Predictions after score threshold: {filtered_predictions}")
+    print(f"Average predictions per image: {total_predictions / len(dataset):.2f}")
+    print(f"Average filtered predictions per image: {filtered_predictions / len(dataset):.2f}")
+
+    with open(args.output_path, 'w') as f:
+        json.dump(results, f)
+    
+    print(f"\nSaved {len(results)} predictions to {args.output_path}")
+    if args.visualize:
+        print(f"Saved visualization results to {args.visualization_dir}")
+    
+    if len(results) == 0:
+        print("WARNING: No predictions passed the score threshold!")
+        return 0.0, 0.0
+    
+    # 評価
+    coco_dt = coco_gt.loadRes(args.output_path)
+    
+    # バウンディングボックスの評価
+    coco_eval = COCOeval(coco_gt, coco_dt, 'bbox')
+    if args.max_samples is not None:
+        coco_eval.params.imgIds = dataset.img_ids
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    coco_eval.summarize()
+    box_map = coco_eval.stats[0]
+    
+    # セグメンテーションの評価
+    coco_eval = COCOeval(coco_gt, coco_dt, 'segm')
+    if args.max_samples is not None:
+        coco_eval.params.imgIds = dataset.img_ids
+    coco_eval.evaluate()
+    coco_eval.accumulate()
+    coco_eval.summarize()
+    mask_map = coco_eval.stats[0]
+
+    return box_map, mask_map
 
 def main(args):
     # Device configuration
