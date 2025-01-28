@@ -19,6 +19,8 @@ from threading import Thread
 import threading
 from collections import OrderedDict
 
+from custom_maskrcnn_model import CustomMaskRCNN
+
 class COCOEvalDataset(Dataset):
     """
     Custom Dataset for COCO evaluation with batch processing support
@@ -347,9 +349,6 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
                     
                     # Convert masks and create results for parallel processing
                     for box, score, label, mask in zip(boxes, scores, labels, masks):
-                        if score < args.score_threshold:
-                            continue
-                        
                         coco_category_id = category_mapping.get(label.item(), -1)
                         if coco_category_id == -1:
                             continue
@@ -432,7 +431,10 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
 
 def main(args):
     # Device configuration
-    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    if args.device:
+        device = args.device
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
     # Initialize COCO dataset
@@ -454,8 +456,9 @@ def main(args):
 
     # Load model and weights
     model = maskrcnn_resnet50_fpn_v2(
+        weights=MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT,
         box_score_thresh=args.score_threshold,
-        rpn_post_nms_top_n_test=1000,  # Number of proposals after NMS
+        rpn_post_nms_top_n_test=1000,   # Number of proposals after NMS
         box_detections_per_img=100,     # Maximum detections per image
         rpn_pre_nms_top_n_test=1000,    # Number of proposals before NMS
         rpn_fg_iou_thresh=0.7,          # IoU threshold for foreground
@@ -464,6 +467,8 @@ def main(args):
         box_fg_iou_thresh=0.5,          # Box head foreground IoU threshold
         box_bg_iou_thresh=0.5           # Box head background IoU threshold
     )
+
+    model = CustomMaskRCNN(model)
     
     # Print model configuration
     print("\nModel Configuration:")
@@ -473,12 +478,14 @@ def main(args):
     print(f"Box NMS threshold: 0.5")
     print(f"Box foreground IoU threshold: 0.5")
     
-    if args.weights_path:
-        print(f"Loading weights from {args.weights_path}")
-        model.load_state_dict(torch.load(args.weights_path))
-    
     model = model.to(device)
     model.eval()
+
+    if isinstance(model, CustomMaskRCNN):
+        # Warm up
+        with torch.no_grad():
+            model([torch.rand((3, 800, 1056)).to(device) for _ in range(1)])
+        model.reset()
 
     # Evaluate model
     print(f"Evaluating model on {args.max_samples if args.max_samples else 'all'} samples...")
@@ -487,6 +494,9 @@ def main(args):
     print(f"\nResults:")
     print(f"Box mAP: {box_map:.4f}")
     print(f"Mask mAP: {mask_map:.4f}")
+
+    if isinstance(model, CustomMaskRCNN):
+        model.print()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Evaluate Mask R-CNN model on COCO dataset')
@@ -512,6 +522,8 @@ if __name__ == '__main__':
                       help='Batch size for evaluation (default: 4)')
     parser.add_argument('--num_workers', type=int, default=4,
                       help='Number of worker processes for data loading (default: 4)')
+    parser.add_argument('--device', type=str, default=None,
+                      help='')
     
     args = parser.parse_args()
     main(args)
