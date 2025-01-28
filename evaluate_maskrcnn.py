@@ -17,6 +17,7 @@ import queue
 from queue import Queue
 from threading import Thread
 import threading
+from collections import OrderedDict
 
 class COCOEvalDataset(Dataset):
     """
@@ -327,57 +328,60 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
     pending_results = []
 
     with torch.no_grad():
-        for batch in tqdm(dataloader, desc="Processing batches"):
-            images = [img.to(device) for img in batch['images']]
-            predictions = model(images)
-            
-            for img_idx, (pred, img_id, img_info) in enumerate(zip(predictions, batch['img_ids'], batch['img_infos'])):
-                if args.visualize:
-                    output_path = os.path.join(args.visualization_dir, f'result_{img_id}.png')
-                    visualize_prediction(batch['images'][img_idx], pred, category_mapping, coco_gt, output_path, args)
+        with tqdm(dataloader, desc="Processing batches") as pbar:
+            for batch in pbar:
+                images = [img.to(device) for img in batch['images']]
+                predictions = model(images)
                 
-                boxes = pred['boxes'].cpu().numpy()
-                scores = pred['scores'].cpu().numpy()
-                labels = pred['labels'].cpu().numpy()
-                masks = pred['masks'].cpu().numpy()
+                for img_idx, (pred, img_id, img_info) in enumerate(zip(predictions, batch['img_ids'], batch['img_infos'])):
+                    if args.visualize:
+                        output_path = os.path.join(args.visualization_dir, f'result_{img_id}.png')
+                        visualize_prediction(batch['images'][img_idx], pred, category_mapping, coco_gt, output_path, args)
+                    
+                    boxes = pred['boxes'].cpu().numpy()
+                    scores = pred['scores'].cpu().numpy()
+                    labels = pred['labels'].cpu().numpy()
+                    masks = pred['masks'].cpu().numpy()
+                    
+                    total_predictions += len(boxes)
+                    
+                    # Convert masks and create results for parallel processing
+                    for box, score, label, mask in zip(boxes, scores, labels, masks):
+                        if score < args.score_threshold:
+                            continue
+                        
+                        coco_category_id = category_mapping.get(label.item(), -1)
+                        if coco_category_id == -1:
+                            continue
+                        
+                        filtered_predictions += 1
+                        binary_mask = (mask[0] > 0.5).astype(np.uint8)
+                        
+                        # Add mask processing to queue
+                        mask_processor.submit_mask(mask_count, binary_mask, img_info['height'], img_info['width'])
+                        
+                        # Save result
+                        x1, y1, x2, y2 = box.tolist()
+                        width = x2 - x1
+                        height = y2 - y1
+                        
+                        pending_results.append({
+                            'mask_id': mask_count,
+                            'result': {
+                                'image_id': img_id,
+                                'category_id': coco_category_id,
+                                'bbox': [x1, y1, width, height],
+                                'score': float(score.item())
+                            }
+                        })
+                        mask_count += 1
                 
-                total_predictions += len(boxes)
-                
-                # Convert masks and create results for parallel processing
-                for box, score, label, mask in zip(boxes, scores, labels, masks):
-                    if score < args.score_threshold:
-                        continue
-                    
-                    coco_category_id = category_mapping.get(label.item(), -1)
-                    if coco_category_id == -1:
-                        continue
-                    
-                    filtered_predictions += 1
-                    binary_mask = (mask[0] > 0.5).astype(np.uint8)
-                    
-                    # Add mask processing to queue
-                    mask_processor.submit_mask(mask_count, binary_mask, img_info['height'], img_info['width'])
-                    
-                    # Save result
-                    x1, y1, x2, y2 = box.tolist()
-                    width = x2 - x1
-                    height = y2 - y1
-                    
-                    pending_results.append({
-                        'mask_id': mask_count,
-                        'result': {
-                            'image_id': img_id,
-                            'category_id': coco_category_id,
-                            'bbox': [x1, y1, width, height],
-                            'score': float(score.item())
-                        }
-                    })
-                    mask_count += 1
+                pbar.set_postfix(OrderedDict(pending=len(pending_results)))
 
-            # Wait for a batch of masks to be processed
-            if len(pending_results) >= 1000:
-                processed_results, pending_results = process_pending_results(pending_results, mask_processor)
-                results.extend(processed_results)
+                # Wait for a batch of masks to be processed
+                if len(pending_results) >= 1000:
+                    processed_results, pending_results = process_pending_results(pending_results, mask_processor)
+                    results.extend(processed_results)
 
     # Process remaining results
     while len(pending_results) > 0:
