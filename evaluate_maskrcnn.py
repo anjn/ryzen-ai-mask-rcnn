@@ -48,28 +48,6 @@ def get_coco_category_mapping(coco_gt):
     
     return model_to_coco_id
 
-def preprocess_image(image, device):
-    """
-    Preprocess image for model input
-    Args:
-        image: Input image tensor
-        device: Device to move tensor to
-    Returns:
-        Preprocessed image tensor
-    """
-    # Convert to float32
-    image = image.to(torch.float32)
-    
-    # Normalize pixel values
-    image = image / 255.0
-    
-    # Apply ImageNet normalization
-    mean = torch.tensor([0.485, 0.456, 0.406]).view(-1, 1, 1).to(device)
-    std = torch.tensor([0.229, 0.224, 0.225]).view(-1, 1, 1).to(device)
-    image = (image - mean) / std
-    
-    return image
-
 def visualize_prediction(image, prediction, category_mapping, coco_gt, output_path, args):
     """
     Visualize prediction results on the image
@@ -83,11 +61,6 @@ def visualize_prediction(image, prediction, category_mapping, coco_gt, output_pa
     """
     # Convert tensor to numpy array
     image_np = image.cpu().permute(1, 2, 0).numpy()
-    # Denormalize
-    mean = np.array([0.485, 0.456, 0.406])
-    std = np.array([0.229, 0.224, 0.225])
-    image_np = std * image_np + mean
-    image_np = np.clip(image_np * 255, 0, 255).astype(np.uint8)
     
     # Create visualization image
     vis_image = image_np.copy()
@@ -103,7 +76,7 @@ def visualize_prediction(image, prediction, category_mapping, coco_gt, output_pa
     
     # Draw each detection
     for box, label, score, mask, color in zip(boxes, labels, scores, masks, colors):
-        if score < args.score_threshold:
+        if score < args.visualize_threshold:
             continue
             
         # Convert color to BGR (for OpenCV)
@@ -169,6 +142,8 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
     if args.visualize:
         os.makedirs(args.visualization_dir, exist_ok=True)
     
+    preprocess_transforms = MaskRCNN_ResNet50_FPN_V2_Weights.COCO_V1.transforms()
+    
     # Process each image
     with torch.no_grad():
         for img_id in tqdm(img_ids, desc="Processing images"):
@@ -183,10 +158,10 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
             
             # Move to device first, then preprocess
             image = image.to(device)
-            image = preprocess_image(image, device)
+            image_prep = preprocess_transforms(image)
             
             # Forward pass
-            predictions = model([image])[0]
+            predictions = model([image_prep])[0]
             
             # Visualize and save results if enabled
             if args.visualize:
@@ -348,7 +323,7 @@ def main(args):
         box_score_thresh=args.score_threshold,
         rpn_post_nms_top_n_test=1000,  # Number of proposals after NMS
         box_detections_per_img=100,     # Maximum detections per image
-        rpn_pre_nms_top_n_test=2000,    # Number of proposals before NMS
+        rpn_pre_nms_top_n_test=1000,    # Number of proposals before NMS
         rpn_fg_iou_thresh=0.7,          # IoU threshold for foreground
         rpn_bg_iou_thresh=0.3,          # IoU threshold for background
         box_nms_thresh=0.5,             # NMS threshold for predictions
@@ -391,14 +366,16 @@ if __name__ == '__main__':
                       help='Maximum number of samples to process (default: all samples)')
     parser.add_argument('--weights_path', type=str, default=None,
                       help='Path to model weights file (default: use pre-trained weights)')
-    parser.add_argument('--score_threshold', type=float, default=0.5,
-                      help='Score threshold for predictions (default: 0.5)')
+    parser.add_argument('--score_threshold', type=float, default=0.05,
+                      help='Score threshold for predictions (default: 0.05)')
     parser.add_argument('--output_path', type=str, default='maskrcnn_predictions.json',
                       help='Path to save prediction results (default: maskrcnn_predictions.json)')
     parser.add_argument('--visualize', action='store_true',
                       help='Enable visualization of predictions')
     parser.add_argument('--visualization_dir', type=str, default='visualization_results',
                       help='Directory to save visualization results (default: visualization_results)')
+    parser.add_argument('--visualize_threshold', type=float, default=0.5,
+                      help='Score threshold for visualization (default: 0.5)')
     
     args = parser.parse_args()
     main(args)
