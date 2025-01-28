@@ -1,6 +1,7 @@
 import json
 import torch
 import torchvision
+from torch.utils.data import Dataset, DataLoader
 from torchvision.models.detection import maskrcnn_resnet50_fpn_v2, MaskRCNN_ResNet50_FPN_V2_Weights
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
@@ -10,6 +11,49 @@ import argparse
 import cv2
 import matplotlib.pyplot as plt
 import os
+
+class COCOEvalDataset(Dataset):
+    """
+    Custom Dataset for COCO evaluation with batch processing support
+    """
+    def __init__(self, coco_gt, img_dir, transforms=None):
+        self.coco = coco_gt
+        self.img_dir = img_dir
+        self.transforms = transforms
+        self.img_ids = self.coco.getImgIds()
+        
+    def __len__(self):
+        return len(self.img_ids)
+    
+    def __getitem__(self, idx):
+        img_id = self.img_ids[idx]
+        img_info = self.coco.loadImgs(img_id)[0]
+        image_path = img_info['file_name']
+        
+        # Load image
+        image = torchvision.io.read_image(f"{self.img_dir}/{image_path}")
+        if image.shape[0] == 1:  # Handle grayscale images
+            image = image.repeat(3, 1, 1)
+            
+        # Apply transforms if provided
+        if self.transforms is not None:
+            image = self.transforms(image)
+            
+        return {
+            'image': image,
+            'img_id': img_id,
+            'img_info': img_info
+        }
+
+def collate_fn(batch):
+    """
+    Custom collate function for the DataLoader
+    """
+    return {
+        'images': [item['image'] for item in batch],
+        'img_ids': [item['img_id'] for item in batch],
+        'img_infos': [item['img_info'] for item in batch]
+    }
 
 def get_coco_category_mapping(coco_gt):
     """
@@ -113,7 +157,7 @@ def visualize_prediction(image, prediction, category_mapping, coco_gt, output_pa
 
 def evaluate_model(model, coco_gt, device, args, category_mapping):
     """
-    Evaluate model on COCO dataset
+    Evaluate model on COCO dataset with batch processing
     Args:
         model: Model to evaluate
         coco_gt: COCO ground truth object
@@ -132,84 +176,86 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
     print("\nEvaluation Settings:")
     print(f"Score threshold: {args.score_threshold}")
     print(f"Max samples: {args.max_samples}")
+    print(f"Batch size: {args.batch_size}")
 
-    # Get image IDs
-    img_ids = coco_gt.getImgIds()
+    # Create dataset and dataloader
+    preprocess_transforms = MaskRCNN_ResNet50_FPN_V2_Weights.COCO_V1.transforms()
+    dataset = COCOEvalDataset(coco_gt, args.img_dir, transforms=preprocess_transforms)
+    
+    # Limit dataset size if max_samples is specified
     if args.max_samples is not None:
-        img_ids = img_ids[:args.max_samples]
+        dataset.img_ids = dataset.img_ids[:args.max_samples]
+    
+    dataloader = DataLoader(
+        dataset,
+        batch_size=args.batch_size,
+        shuffle=False,
+        num_workers=args.num_workers,
+        collate_fn=collate_fn
+    )
 
     # Create visualization directory if needed
     if args.visualize:
         os.makedirs(args.visualization_dir, exist_ok=True)
-    
-    preprocess_transforms = MaskRCNN_ResNet50_FPN_V2_Weights.COCO_V1.transforms()
-    
-    # Process each image
+
+    # Process batches
     with torch.no_grad():
-        for img_id in tqdm(img_ids, desc="Processing images"):
-            # Load image
-            img_info = coco_gt.loadImgs(img_id)[0]
-            image_path = img_info['file_name']
-            
-            # Load and preprocess image
-            image = torchvision.io.read_image(f"{args.img_dir}/{image_path}")
-            if image.shape[0] == 1:  # Handle grayscale images
-                image = image.repeat(3, 1, 1)
-            
-            # Move to device first, then preprocess
-            image = image.to(device)
-            image_prep = preprocess_transforms(image)
+        for batch in tqdm(dataloader, desc="Processing batches"):
+            # Move images to device and prepare batch
+            images = [img.to(device) for img in batch['images']]
             
             # Forward pass
-            predictions = model([image_prep])[0]
+            predictions = model(images)
             
-            # Visualize and save results if enabled
-            if args.visualize:
-                output_path = os.path.join(args.visualization_dir, f'result_{img_id}.png')
-                visualize_prediction(image, predictions, category_mapping, coco_gt, output_path, args)
-            
-            # Convert predictions to COCO format
-            boxes = predictions['boxes'].cpu().numpy()
-            scores = predictions['scores'].cpu().numpy()
-            labels = predictions['labels'].cpu().numpy()
-            masks = predictions['masks'].cpu().numpy()
-            
-            total_predictions += len(boxes)
-            
-            # Convert masks to RLE format
-            for box, score, label, mask in zip(boxes, scores, labels, masks):
-                if score < args.score_threshold:  # Skip low confidence predictions
-                    continue
+            # Process each image in the batch
+            for img_idx, (pred, img_id, img_info) in enumerate(zip(predictions, batch['img_ids'], batch['img_infos'])):
+                # Visualize and save results if enabled
+                if args.visualize:
+                    output_path = os.path.join(args.visualization_dir, f'result_{img_id}.png')
+                    visualize_prediction(batch['images'][img_idx], pred, category_mapping, coco_gt, output_path, args)
                 
-                # Map model category index to COCO category ID
-                coco_category_id = category_mapping.get(label.item(), -1)
-                if coco_category_id == -1:  # Skip if no valid mapping
-                    continue
+                # Convert predictions to COCO format
+                boxes = pred['boxes'].cpu().numpy()
+                scores = pred['scores'].cpu().numpy()
+                labels = pred['labels'].cpu().numpy()
+                masks = pred['masks'].cpu().numpy()
                 
-                filtered_predictions += 1
-                # Ensure mask is binary
-                binary_mask = (mask[0] > 0.5).astype(np.uint8)
-                rle = mask_to_rle(binary_mask, img_info['height'], img_info['width'])
+                total_predictions += len(boxes)
                 
-                # Convert box from [x1, y1, x2, y2] to COCO format [x, y, width, height]
-                x1, y1, x2, y2 = box.tolist()
-                width = x2 - x1
-                height = y2 - y1
-                result = {
-                    'image_id': img_id,
-                    'category_id': coco_category_id,  # Use mapped COCO category ID
-                    'bbox': [x1, y1, width, height],  # COCO format
-                    'score': float(score.item()),  # Ensure float
-                    'segmentation': rle
-                }
-                results.append(result)
+                # Convert masks to RLE format
+                for box, score, label, mask in zip(boxes, scores, labels, masks):
+                    if score < args.score_threshold:  # Skip low confidence predictions
+                        continue
+                    
+                    # Map model category index to COCO category ID
+                    coco_category_id = category_mapping.get(label.item(), -1)
+                    if coco_category_id == -1:  # Skip if no valid mapping
+                        continue
+                    
+                    filtered_predictions += 1
+                    # Ensure mask is binary
+                    binary_mask = (mask[0] > 0.5).astype(np.uint8)
+                    rle = mask_to_rle(binary_mask, img_info['height'], img_info['width'])
+                    
+                    # Convert box from [x1, y1, x2, y2] to COCO format [x, y, width, height]
+                    x1, y1, x2, y2 = box.tolist()
+                    width = x2 - x1
+                    height = y2 - y1
+                    result = {
+                        'image_id': img_id,
+                        'category_id': coco_category_id,
+                        'bbox': [x1, y1, width, height],
+                        'score': float(score.item()),
+                        'segmentation': rle
+                    }
+                    results.append(result)
     
     # Print prediction statistics
     print(f"\nPrediction Statistics:")
     print(f"Total predictions across all images: {total_predictions}")
     print(f"Predictions after score threshold: {filtered_predictions}")
-    print(f"Average predictions per image: {total_predictions / len(img_ids):.2f}")
-    print(f"Average filtered predictions per image: {filtered_predictions / len(img_ids):.2f}")
+    print(f"Average predictions per image: {total_predictions / len(dataset):.2f}")
+    print(f"Average filtered predictions per image: {filtered_predictions / len(dataset):.2f}")
 
     # Save results
     with open(args.output_path, 'w') as f:
@@ -227,7 +273,7 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
     coco_dt = coco_gt.loadRes(args.output_path)
     coco_eval = COCOeval(coco_gt, coco_dt, 'bbox')
     if args.max_samples is not None:
-        coco_eval.params.imgIds = img_ids
+        coco_eval.params.imgIds = dataset.img_ids
     coco_eval.evaluate()
     coco_eval.accumulate()
     coco_eval.summarize()
@@ -236,7 +282,7 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
     # Evaluate segmentation
     coco_eval = COCOeval(coco_gt, coco_dt, 'segm')
     if args.max_samples is not None:
-        coco_eval.params.imgIds = img_ids
+        coco_eval.params.imgIds = dataset.img_ids
     coco_eval.evaluate()
     coco_eval.accumulate()
     coco_eval.summarize()
@@ -376,6 +422,10 @@ if __name__ == '__main__':
                       help='Directory to save visualization results (default: visualization_results)')
     parser.add_argument('--visualize_threshold', type=float, default=0.5,
                       help='Score threshold for visualization (default: 0.5)')
+    parser.add_argument('--batch_size', type=int, default=4,
+                      help='Batch size for evaluation (default: 4)')
+    parser.add_argument('--num_workers', type=int, default=4,
+                      help='Number of worker processes for data loading (default: 4)')
     
     args = parser.parse_args()
     main(args)
