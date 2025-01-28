@@ -453,9 +453,7 @@ def main(args):
         print(f"Model index {model_idx} -> COCO ID {coco_id} ({cat['name']})")
 
     # Load model and weights
-    weights = MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT if not args.weights_path else None
     model = maskrcnn_resnet50_fpn_v2(
-        weights=weights,
         box_score_thresh=args.score_threshold,
         rpn_post_nms_top_n_test=1000,  # Number of proposals after NMS
         box_detections_per_img=100,     # Maximum detections per image
@@ -500,8 +498,6 @@ if __name__ == '__main__':
                       help='Directory containing the images')
     parser.add_argument('--max_samples', type=int, default=None,
                       help='Maximum number of samples to process (default: all samples)')
-    parser.add_argument('--weights_path', type=str, default=None,
-                      help='Path to model weights file (default: use pre-trained weights)')
     parser.add_argument('--score_threshold', type=float, default=0.05,
                       help='Score threshold for predictions (default: 0.05)')
     parser.add_argument('--output_path', type=str, default='maskrcnn_predictions.json',
