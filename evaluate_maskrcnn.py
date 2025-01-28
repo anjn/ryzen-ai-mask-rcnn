@@ -194,15 +194,15 @@ def mask_to_rle(binary_mask, height, width):
     Returns:
         RLE encoded mask in COCO format
     """
-    # Fortranオーダーで1次元配列に変換（列優先）
+    # Convert to 1D array in Fortran order (column-major)
     mask_array = binary_mask.ravel(order='F')
     
-    # 最初が1の場合、0の長さは0から開始
+    # If the first value is 1, start with a zero-length run of zeros
     counts = []
     if mask_array[0] == 1:
         counts.append(0)
     
-    # 連続する同じ値の長さを計算
+    # Calculate lengths of consecutive identical values
     current_value = mask_array[0]
     current_count = 1
     
@@ -214,21 +214,21 @@ def mask_to_rle(binary_mask, height, width):
             current_value = value
             current_count = 1
     
-    # 最後の連続部分を追加
+    # Add the final run length
     counts.append(current_count)
     
-    # 最後が1で終わる場合、0の長さ0を追加
+    # If ending with 1, append a zero-length run of zeros
     if current_value == 1:
         counts.append(0)
     
-    # 合計が画像のピクセル数と一致することを確認
+    # Verify total length matches image size
     assert sum(counts) == height * width, f"RLE counts sum ({sum(counts)}) does not match image size ({height * width})"
     
     return {'counts': counts, 'size': [height, width]}
 
 class MaskProcessor:
     """
-    マスク処理を並列化するためのクラス
+    Class for parallel mask processing
     """
     def __init__(self, max_workers=None):
         self.executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
@@ -343,7 +343,7 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
                 
                 total_predictions += len(boxes)
                 
-                # 並列処理のためのマスク変換とリザルト作成
+                # Convert masks and create results for parallel processing
                 for box, score, label, mask in zip(boxes, scores, labels, masks):
                     if score < args.score_threshold:
                         continue
@@ -355,10 +355,10 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
                     filtered_predictions += 1
                     binary_mask = (mask[0] > 0.5).astype(np.uint8)
                     
-                    # マスク処理をキューに追加
+                    # Add mask processing to queue
                     mask_processor.submit_mask(mask_count, binary_mask, img_info['height'], img_info['width'])
                     
-                    # 結果を保存
+                    # Save result
                     x1, y1, x2, y2 = box.tolist()
                     width = x2 - x1
                     height = y2 - y1
@@ -374,12 +374,12 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
                     })
                     mask_count += 1
 
-            # 一定数のマスクが処理されるのを待つ
+            # Wait for a batch of masks to be processed
             if len(pending_results) >= 1000:
                 processed_results, pending_results = process_pending_results(pending_results, mask_processor)
                 results.extend(processed_results)
 
-    # 残りの結果を処理
+    # Process remaining results
     while len(pending_results) > 0:
         processed_results, pending_results = process_pending_results(pending_results, mask_processor)
         results.extend(processed_results)
@@ -403,10 +403,10 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
         print("WARNING: No predictions passed the score threshold!")
         return 0.0, 0.0
     
-    # 評価
+    # Evaluation
     coco_dt = coco_gt.loadRes(args.output_path)
     
-    # バウンディングボックスの評価
+    # Evaluate bounding boxes
     coco_eval = COCOeval(coco_gt, coco_dt, 'bbox')
     if args.max_samples is not None:
         coco_eval.params.imgIds = dataset.img_ids
@@ -415,7 +415,7 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
     coco_eval.summarize()
     box_map = coco_eval.stats[0]
     
-    # セグメンテーションの評価
+    # Evaluate segmentation
     coco_eval = COCOeval(coco_gt, coco_dt, 'segm')
     if args.max_samples is not None:
         coco_eval.params.imgIds = dataset.img_ids
