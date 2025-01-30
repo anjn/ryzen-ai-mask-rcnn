@@ -1,8 +1,11 @@
+from pathlib import Path
 import json
 import torch
 import torchvision
 from torch.utils.data import Dataset, DataLoader
 from torchvision.models.detection import maskrcnn_resnet50_fpn_v2, MaskRCNN_ResNet50_FPN_V2_Weights
+from torchvision_mod.models.detection.transform import GeneralizedRCNNTransform
+#from torchvision_mod.models.detection import maskrcnn_resnet50_fpn_v2, MaskRCNN_ResNet50_FPN_V2_Weights
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 import numpy as np
@@ -20,86 +23,8 @@ import threading
 from collections import OrderedDict
 
 from custom_maskrcnn_model import CustomMaskRCNN
+from coco_utils import COCOEvalDataset, coco_collate_fn, get_coco_category_mapping
 
-class COCOEvalDataset(Dataset):
-    """
-    Custom Dataset for COCO evaluation with batch processing support
-    """
-    def __init__(self, coco_gt, img_dir, transforms=None):
-        self.coco = coco_gt
-        self.img_dir = img_dir
-        self.transforms = transforms
-        self.img_ids = self.coco.getImgIds()
-        
-    def __len__(self):
-        return len(self.img_ids)
-    
-    def __getitem__(self, idx):
-        img_id = self.img_ids[idx]
-        img_info = self.coco.loadImgs(img_id)[0]
-        image_path = img_info['file_name']
-        
-        # Load image
-        image = torchvision.io.read_image(f"{self.img_dir}/{image_path}")
-        if image.shape[0] == 1:  # Handle grayscale images
-            image = image.repeat(3, 1, 1)
-            
-        # Apply transforms if provided
-        if self.transforms is not None:
-            image = self.transforms(image)
-            
-        return {
-            'image': image,
-            'img_id': img_id,
-            'img_info': img_info
-        }
-
-def collate_fn(batch):
-    """
-    Custom collate function for the DataLoader
-    """
-    return {
-        'images': [item['image'] for item in batch],
-        'img_ids': [item['img_id'] for item in batch],
-        'img_infos': [item['img_info'] for item in batch]
-    }
-
-def get_coco_category_mapping(coco_gt):
-    """
-    Get mapping between model category indices and COCO dataset category IDs
-    Args:
-        coco_gt: COCO ground truth object
-    Returns:
-        Dictionary mapping model indices to COCO category IDs
-    """
-    # COCO classes that the pre-trained model was trained on (in order)
-    COCO_INSTANCE_CATEGORY_NAMES = [
-        '__background__', 'person', 'bicycle', 'car', 'motorcycle', 'airplane', 'bus',
-        'train', 'truck', 'boat', 'traffic light', 'fire hydrant', 'N/A', 'stop sign',
-        'parking meter', 'bench', 'bird', 'cat', 'dog', 'horse', 'sheep', 'cow',
-        'elephant', 'bear', 'zebra', 'giraffe', 'N/A', 'backpack', 'umbrella', 'N/A', 'N/A',
-        'handbag', 'tie', 'suitcase', 'frisbee', 'skis', 'snowboard', 'sports ball',
-        'kite', 'baseball bat', 'baseball glove', 'skateboard', 'surfboard', 'tennis racket',
-        'bottle', 'N/A', 'wine glass', 'cup', 'fork', 'knife', 'spoon', 'bowl',
-        'banana', 'apple', 'sandwich', 'orange', 'broccoli', 'carrot', 'hot dog', 'pizza',
-        'donut', 'cake', 'chair', 'couch', 'potted plant', 'bed', 'N/A', 'dining table',
-        'N/A', 'N/A', 'toilet', 'N/A', 'tv', 'laptop', 'mouse', 'remote', 'keyboard', 'cell phone',
-        'microwave', 'oven', 'toaster', 'sink', 'refrigerator', 'N/A', 'book',
-        'clock', 'vase', 'scissors', 'teddy bear', 'hair drier', 'toothbrush'
-    ]
-    
-    # Get COCO category information
-    cats = coco_gt.loadCats(coco_gt.getCatIds())
-    coco_name_to_id = {cat['name']: cat['id'] for cat in cats}
-    
-    # Create mapping from model index to COCO category ID
-    model_to_coco_id = {}
-    for idx, name in enumerate(COCO_INSTANCE_CATEGORY_NAMES):
-        if name != 'N/A' and name != '__background__':
-            if name in coco_name_to_id:
-                model_to_coco_id[idx] = coco_name_to_id[name]
-    
-    return model_to_coco_id
 
 def visualize_prediction(image, prediction, category_mapping, coco_gt, output_path, args):
     """
@@ -306,9 +231,14 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
     print(f"Max samples: {args.max_samples}")
     print(f"Batch size: {args.batch_size}")
 
+    fix_input_resolution = True
+    input_resolution = (800, 1056)
+
     # Create dataset and dataloader
     preprocess_transforms = MaskRCNN_ResNet50_FPN_V2_Weights.COCO_V1.transforms()
-    dataset = COCOEvalDataset(coco_gt, args.img_dir, transforms=preprocess_transforms)
+    dataset = COCOEvalDataset(coco_gt, args.img_dir, transforms=preprocess_transforms,
+                              resize=input_resolution if fix_input_resolution else None,
+                              )
     
     if args.max_samples is not None:
         dataset.img_ids = dataset.img_ids[:args.max_samples]
@@ -318,7 +248,7 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
         batch_size=args.batch_size,
         shuffle=False,
         num_workers=args.num_workers,
-        collate_fn=collate_fn
+        collate_fn=coco_collate_fn
     )
 
     if args.visualize:
@@ -329,11 +259,27 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
     mask_count = 0
     pending_results = []
 
+    #input_transform = GeneralizedRCNNTransform(800, 1333, [0.485, 0.456, 0.406], [0.229, 0.224, 0.225])
+    #input_transform.training = False
+
     with torch.no_grad():
         with tqdm(dataloader, desc="Processing batches") as pbar:
             for batch in pbar:
                 images = [img.to(device) for img in batch['images']]
-                predictions = model(images)
+
+                predictions = model(images, batch['img_infos'])
+
+                #if fix_input_resolution:
+                #    image_sizes = [(*image.shape[1:3],) for image in images]
+                #    org_sizes = [(info["org_height"], info["org_width"]) for info in batch['img_infos']]
+                #    print(f"{image_sizes=}")
+                #    print(f"{org_sizes=}")
+                #    predictions = input_transform.postprocess(predictions, image_sizes, org_sizes)
+                #    print(f"{predictions[0]['masks'].shape=}")
+
+                #    for info, org in zip(batch['img_infos'], org_sizes):
+                #        info["height"] = org[0]
+                #        info["width"] = org[1]
                 
                 for img_idx, (pred, img_id, img_info) in enumerate(zip(predictions, batch['img_ids'], batch['img_infos'])):
                     if args.visualize:
@@ -468,7 +414,7 @@ def main(args):
         box_bg_iou_thresh=0.5           # Box head background IoU threshold
     )
 
-    model = CustomMaskRCNN(model)
+    model = CustomMaskRCNN(model, save_io=args.save_io, save_io_dir=args.save_io_dir)
     
     # Print model configuration
     print("\nModel Configuration:")
@@ -481,11 +427,11 @@ def main(args):
     model = model.to(device)
     model.eval()
 
-    if isinstance(model, CustomMaskRCNN):
-        # Warm up
-        with torch.no_grad():
-            model([torch.rand((3, 800, 1056)).to(device) for _ in range(1)])
-        model.reset()
+    #if isinstance(model, CustomMaskRCNN):
+    #    # Warm up
+    #    with torch.no_grad():
+    #        model([torch.rand((3, 800, 1056)).to(device) for _ in range(1)])
+    #    model.reset()
 
     # Evaluate model
     print(f"Evaluating model on {args.max_samples if args.max_samples else 'all'} samples...")
@@ -506,7 +452,7 @@ if __name__ == '__main__':
     parser.add_argument('--img_dir', type=str,
                       default='C:/Users/juna/Work/dataset/coco/val2017',
                       help='Directory containing the images')
-    parser.add_argument('--max_samples', type=int, default=None,
+    parser.add_argument('--max_samples', type=int, default=1,
                       help='Maximum number of samples to process (default: all samples)')
     parser.add_argument('--score_threshold', type=float, default=0.05,
                       help='Score threshold for predictions (default: 0.05)')
@@ -518,11 +464,15 @@ if __name__ == '__main__':
                       help='Directory to save visualization results (default: visualization_results)')
     parser.add_argument('--visualize_threshold', type=float, default=0.5,
                       help='Score threshold for visualization (default: 0.5)')
-    parser.add_argument('--batch_size', type=int, default=4,
+    parser.add_argument('--batch_size', type=int, default=1,
                       help='Batch size for evaluation (default: 4)')
-    parser.add_argument('--num_workers', type=int, default=4,
+    parser.add_argument('--num_workers', type=int, default=1,
                       help='Number of worker processes for data loading (default: 4)')
     parser.add_argument('--device', type=str, default=None,
+                      help='')
+    parser.add_argument('--save_io', action='store_true',
+                      help='')
+    parser.add_argument('--save_io_dir', type=str, default='model_io',
                       help='')
     
     args = parser.parse_args()
