@@ -30,15 +30,15 @@ class MaskRCNNPreProcess(nn.Module):
         return images, original_image_sizes
 
 class MaskRCNNBackboneRPN(nn.Module):
-    def __init__(self, model, import_onnx=True):
+    def __init__(self, model, import_onnx=True, quantize=True):
         super().__init__()
         self.model = model
 
         if import_onnx:
-            self.session = onnxruntime.InferenceSession("model/maskrcnn_backbone_rpn.onnx")
+            self.session = onnxruntime.InferenceSession(f"model/maskrcnn_backbone_rpn{'_quant' if quantize else ''}.onnx")
 
     def forward(self, images):
-        if self.session is None:
+        if not hasattr(self, 'session'):
             features = self.model.backbone(images)
             objectness, pred_bbox_deltas = self.model.rpn.head(list(features.values()))
 
@@ -228,11 +228,11 @@ class CustomMaskRCNN(nn.Module):
 
         if self.save_io:
             assert len(images) == 1
-            print(f"{img_infos=}")
+            #print(f"{img_infos=}")
             for id, image in zip(ids, images):
                 Path(f"{self.save_io_dir}/{id}").mkdir(parents=True, exist_ok=True)
                 input = image.view(1, *images[0].shape).to('cpu').detach().numpy().copy()
-                print(f"{input.shape=}")
+                #print(f"{input.shape=}")
                 np.save(f"{self.save_io_dir}/{id}/input.npy", input)
 
         # Preprocess
@@ -261,8 +261,8 @@ class CustomMaskRCNN(nn.Module):
 
             proposals, box_features = self.box_proposal(images.tensors, features, objectness, pred_bbox_deltas)
 
-            print(f"{len(proposals)=}")
-            print(f"{box_features.shape=}")
+            #print(f"{len(proposals)=}")
+            #print(f"{box_features.shape=}")
 
             if export:
                 self.box_proposal = self.box_proposal.to('cpu')
@@ -284,9 +284,9 @@ class CustomMaskRCNN(nn.Module):
         with self.timer_box_predictor:
             class_logits, box_regression = self.box_predictor(box_features)
 
-            print(f"{box_features.shape=}")
-            print(f"{class_logits.shape=}")
-            print(f"{box_regression.shape=}")
+            #print(f"{box_features.shape=}")
+            #print(f"{class_logits.shape=}")
+            #print(f"{box_regression.shape=}")
 
             if export:
                 torch.onnx.export(
@@ -308,9 +308,9 @@ class CustomMaskRCNN(nn.Module):
         with self.timer_mask_proposal:
             mask_features = self.mask_proposal(features, boxes, images.image_sizes)
 
-            print(f"{features.keys()=}")
-            print(f"{len(boxes)=}")
-            print(f"{mask_features.shape=}")
+            #print(f"{features.keys()=}")
+            #print(f"{len(boxes)=}")
+            #print(f"{mask_features.shape=}")
 
             if export:
                 torch.onnx.export(
@@ -369,7 +369,7 @@ class CustomMaskRCNN(nn.Module):
             from copy import deepcopy
             save_detections = self.model.transform.postprocess(deepcopy(detections), images.image_sizes, images.image_sizes)
             for id, pred in zip(ids, save_detections):
-                print(f"{pred['masks'].shape=}")
+                #print(f"{pred['masks'].shape=}")
                 np.save(f"{self.save_io_dir}/{id}/boxes.npy", pred["boxes"].cpu().numpy())
                 np.save(f"{self.save_io_dir}/{id}/scores.npy", pred["scores"].cpu().numpy())
                 np.save(f"{self.save_io_dir}/{id}/labels.npy", pred["labels"].cpu().numpy())

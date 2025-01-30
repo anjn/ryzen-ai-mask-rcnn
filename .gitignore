@@ -1,5 +1,9 @@
 /venv
 __pycache__
+/quark-*
+/model
+/model_io
+/calib_data
 
 /visualization_results
 /maskrcnn_predictions.json

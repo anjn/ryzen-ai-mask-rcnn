@@ -3,6 +3,18 @@
 
 - [MultiScaleRoIAlign](https://github.com/pytorch/vision/blob/867521ec82c78160b16eec1c3a02d4cef93723ff/torchvision/ops/poolers.py#L230)
 
+ONNX変換時にバッチサイズを1に固定します。次の理由があります。
+
+- Resize (interpolate) オペレータがあり、バッチサイズが不定のとき正しく形状を推論できません。
+- NPU では複数のコアを並列に動作させたときに最も効率が良くなります。バッチを大きくしても効率は上がりません（要確認）
+
+HWについては固定することを強くおすすめします。
+
+作業方針
+- モデル全体をONNXで出力
+- 前処理を削除（NPU推論時にはnumpyで処理する）
+- backbone+rpn、boxまで、box、maskまで、mask、残り、の5つに分解する
+- 形状を確定させる、もしくはバッチにする
 
 ```
 Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.474

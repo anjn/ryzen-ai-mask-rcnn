@@ -260,12 +260,9 @@ class GeneralizedRCNNTransform(nn.Module):
         image_shapes: List[Tuple[int, int]],
         original_image_sizes: List[Tuple[int, int]],
     ) -> List[Dict[str, Tensor]]:
-        print("** DEBUG **", len(result), len(image_shapes), len(original_image_sizes), self.training)
         if self.training:
             return result
         for i, (pred, im_s, o_im_s) in enumerate(zip(result, image_shapes, original_image_sizes)):
-            print(f"** {im_s=}")
-            print(f"** {o_im_s=}")
             boxes = pred["boxes"]
             boxes = resize_boxes(boxes, im_s, o_im_s)
             result[i]["boxes"] = boxes

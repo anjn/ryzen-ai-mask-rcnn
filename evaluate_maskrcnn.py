@@ -387,18 +387,18 @@ def main(args):
     coco_gt = COCO(args.ann_file)
     
     # Print category information
-    cats = coco_gt.loadCats(coco_gt.getCatIds())
-    print("\nCOCO Categories (first 5):")
-    for cat in cats[:5]:
-        print(f"ID: {cat['id']}, Name: {cat['name']}")
+    #cats = coco_gt.loadCats(coco_gt.getCatIds())
+    #print("\nCOCO Categories (first 5):")
+    #for cat in cats[:5]:
+    #    print(f"ID: {cat['id']}, Name: {cat['name']}")
 
     # Get category mapping
     category_mapping = get_coco_category_mapping(coco_gt)
-    print("\nCategory Mapping (first 5):")
-    items = list(category_mapping.items())[:5]
-    for model_idx, coco_id in items:
-        cat = coco_gt.loadCats([coco_id])[0]
-        print(f"Model index {model_idx} -> COCO ID {coco_id} ({cat['name']})")
+    #print("\nCategory Mapping (first 5):")
+    #items = list(category_mapping.items())[:5]
+    #for model_idx, coco_id in items:
+    #    cat = coco_gt.loadCats([coco_id])[0]
+    #    print(f"Model index {model_idx} -> COCO ID {coco_id} ({cat['name']})")
 
     # Load model and weights
     model = maskrcnn_resnet50_fpn_v2(
@@ -441,8 +441,8 @@ def main(args):
     print(f"Box mAP: {box_map:.4f}")
     print(f"Mask mAP: {mask_map:.4f}")
 
-    if isinstance(model, CustomMaskRCNN):
-        model.print()
+    #if isinstance(model, CustomMaskRCNN):
+    #    model.print()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Evaluate Mask R-CNN model on COCO dataset')
