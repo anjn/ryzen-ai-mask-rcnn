@@ -4,8 +4,7 @@ import torch
 import torchvision
 from torch.utils.data import Dataset, DataLoader
 from torchvision.models.detection import maskrcnn_resnet50_fpn_v2, MaskRCNN_ResNet50_FPN_V2_Weights
-from torchvision_mod.models.detection.transform import GeneralizedRCNNTransform
-#from torchvision_mod.models.detection import maskrcnn_resnet50_fpn_v2, MaskRCNN_ResNet50_FPN_V2_Weights
+from torchvision.models.detection.transform import GeneralizedRCNNTransform
 from pycocotools.coco import COCO
 from pycocotools.cocoeval import COCOeval
 import numpy as np

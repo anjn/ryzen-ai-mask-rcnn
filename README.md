@@ -47,3 +47,9 @@ Results:
 Box mAP: 0.4739
 Mask mAP: 0.4172
 ```
+
+カーネルサイズ1x1のMaxPoolはNPUで実行不可のため、3x3に変更する。出力のshapeが変わってしまわないようにpadsも変更する。
+カーネルサイズを変更してしまうと処理結果に影響がありそうに思うが、精度への影響はほとんどない様子。
+```
+sam4onnx -if ./model/maskrcnn_backbone_rpn_quant.onnx -of ./model/maskrcnn_backbone_rpn_quant_fix.onnx -on /backbone/fpn/extra_blocks/MaxPool --attributes kernel_shape int64 [3,3] --attributes pads int64 [1,1,1,1]
+```

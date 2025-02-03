@@ -8,11 +8,9 @@ import torch
 from torch import nn, Tensor
 import onnxruntime
 
-from torchvision_mod.models.detection import maskrcnn_resnet50_fpn_v2, MaskRCNN_ResNet50_FPN_V2_Weights
-
-# https://github.com/pytorch/vision/blob/867521ec82c78160b16eec1c3a02d4cef93723ff/torchvision/models/detection/rpn.py#L88
-from torchvision_mod.models.detection.rpn import concat_box_prediction_layers
-from torchvision_mod.models.detection.roi_heads import maskrcnn_inference
+from torchvision.models.detection import maskrcnn_resnet50_fpn_v2, MaskRCNN_ResNet50_FPN_V2_Weights
+from torchvision.models.detection.rpn import concat_box_prediction_layers
+from torchvision.models.detection.roi_heads import maskrcnn_inference
 
 class MaskRCNNPreProcess(nn.Module):
     def __init__(self, model):
@@ -30,12 +28,12 @@ class MaskRCNNPreProcess(nn.Module):
         return images, original_image_sizes
 
 class MaskRCNNBackboneRPN(nn.Module):
-    def __init__(self, model, import_onnx=True, quantize=True):
+    def __init__(self, model, import_onnx=False, quantize=True):
         super().__init__()
         self.model = model
 
         if import_onnx:
-            self.session = onnxruntime.InferenceSession(f"model/maskrcnn_backbone_rpn{'_quant' if quantize else ''}.onnx")
+            self.session = onnxruntime.InferenceSession(f"model/maskrcnn_backbone_rpn{'_quant_fix' if quantize else ''}.onnx")
 
     def forward(self, images):
         if not hasattr(self, 'session'):
