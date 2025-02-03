@@ -426,11 +426,11 @@ def main(args):
     model = model.to(device)
     model.eval()
 
-    #if isinstance(model, CustomMaskRCNN):
-    #    # Warm up
-    #    with torch.no_grad():
-    #        model([torch.rand((3, 800, 1056)).to(device) for _ in range(1)])
-    #    model.reset()
+    if isinstance(model, CustomMaskRCNN):
+        # Warm up
+        with torch.no_grad():
+            model([torch.rand((3, 800, 1056)).to(device) for _ in range(1)], [{"id": 0, "height": 800, "width": 1056}])
+        model.reset()
 
     # Evaluate model
     print(f"Evaluating model on {args.max_samples if args.max_samples else 'all'} samples...")
@@ -440,8 +440,8 @@ def main(args):
     print(f"Box mAP: {box_map:.4f}")
     print(f"Mask mAP: {mask_map:.4f}")
 
-    #if isinstance(model, CustomMaskRCNN):
-    #    model.print()
+    if isinstance(model, CustomMaskRCNN):
+        model.print()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Evaluate Mask R-CNN model on COCO dataset')

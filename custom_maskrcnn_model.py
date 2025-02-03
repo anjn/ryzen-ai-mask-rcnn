@@ -1,3 +1,4 @@
+import os
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -11,6 +12,26 @@ import onnxruntime
 from torchvision.models.detection import maskrcnn_resnet50_fpn_v2, MaskRCNN_ResNet50_FPN_V2_Weights
 from torchvision.models.detection.rpn import concat_box_prediction_layers
 from torchvision.models.detection.roi_heads import maskrcnn_inference
+
+
+def create_vitisai_ep_session(model_path, model_name, num_of_dpu_runners=4, enable_analyzer=False):
+    cache_dir = os.path.join(os.getcwd(),  r'cache')
+    return onnxruntime.InferenceSession(
+        # 量子化済み ONNX モデルを指定
+        model_path,
+        # NPU を使用して推論を実行するように指示
+        providers = ['VitisAIExecutionProvider'],
+        # NPU 実行に関するオプション
+        provider_options = [{
+            'config_file': f"{os.environ['VAIP_CONFIG_HOME']}/vaip_config.json",
+            'num_of_dpu_runners': num_of_dpu_runners,
+            'cacheDir': cache_dir,
+            'cacheKey': model_name,
+            'ai_analyzer_visualization': enable_analyzer,
+            'ai_analyzer_profiling': enable_analyzer,
+        }]
+    )
+
 
 class MaskRCNNPreProcess(nn.Module):
     def __init__(self, model):
@@ -27,13 +48,26 @@ class MaskRCNNPreProcess(nn.Module):
 
         return images, original_image_sizes
 
+
 class MaskRCNNBackboneRPN(nn.Module):
-    def __init__(self, model, import_onnx=False, quantize=True):
+    def __init__(self, model, args):
         super().__init__()
         self.model = model
 
-        if import_onnx:
-            self.session = onnxruntime.InferenceSession(f"model/maskrcnn_backbone_rpn{'_quant_fix' if quantize else ''}.onnx")
+        if args.onnx_model_backbone is not None:
+            print(f"Load {args.onnx_model_backbone} using {args.onnx_ep}")
+
+            if args.onnx_ep == "cpu":
+                self.session = onnxruntime.InferenceSession(args.onnx_model_backbone)
+
+            elif args.onnx_ep == 'vai':
+                self.session = create_vitisai_ep_session(
+                    args.onnx_model_backbone,
+                    "maskrcnn_backbone",
+                )
+
+            else:
+                raise ValueError(f"Invalid value was passed to --onnx_ep option : {args.onnx_ep}")
 
     def forward(self, images):
         if not hasattr(self, 'session'):
@@ -174,14 +208,14 @@ class CodeTimer:
 
 
 class CustomMaskRCNN(nn.Module):
-    def __init__(self, model, save_io=False, save_io_dir="model_io"):
+    def __init__(self, model, args, save_io=False, save_io_dir="model_io"):
         super().__init__()
         self.model = model
         self.save_io = save_io
         self.save_io_dir = save_io_dir
 
         self.preprocess = MaskRCNNPreProcess(model)
-        self.backbone_rpn = MaskRCNNBackboneRPN(model)
+        self.backbone_rpn = MaskRCNNBackboneRPN(model, args)
         self.box_proposal = MaskRCNNBoxProposal(model)
         self.box_predictor = MaskRCNNBoxPredictor(model)
         self.box_postprocess = MaskRCNNBoxPostProcess(model)
@@ -396,7 +430,7 @@ def main(args):
     model = maskrcnn_resnet50_fpn_v2(
         weights=MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT,
     )
-    model = CustomMaskRCNN(model)
+    model = CustomMaskRCNN(model, args)
 
     model = model.to(device)
     model.eval()
@@ -450,6 +484,10 @@ def main(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Evaluate Mask R-CNN model on COCO dataset')
     parser.add_argument('--device', type=str, default=None,
+                      help='')
+    parser.add_argument('--onnx_model_backbone', type=str, default=None,
+                      help='')
+    parser.add_argument('--onnx_ep', type=str, default='cpu',
                       help='')
     args = parser.parse_args()
     main(args)

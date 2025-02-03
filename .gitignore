@@ -4,6 +4,15 @@ __pycache__
 /model
 /model_io
 /calib_data
+/cache
 
 /visualization_results
 /maskrcnn_predictions.json
+
+/dpu_timestamp_info.json
+/fused_viz.json
+/record_timer_ts.json
+/summary.csv
+/vitisai_ep_report.json
+/xrt.run_summary
+/aianalyzer.log
