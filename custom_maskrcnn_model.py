@@ -1,3 +1,4 @@
+import os
 import time
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
@@ -35,7 +36,25 @@ class MaskRCNNBackboneRPN(nn.Module):
         self.model = model
 
         if import_onnx:
-            self.session = onnxruntime.InferenceSession(f"model/maskrcnn_backbone_rpn{'_quant' if quantize else ''}.onnx")
+            #self.session = onnxruntime.InferenceSession(f"model/maskrcnn_backbone_rpn{'_quant' if quantize else ''}.onnx")
+            
+            enable_analyzer = True
+            cache_dir = os.path.join(os.getcwd(),  r'cache')
+            self.session = onnxruntime.InferenceSession(
+                # 量子化済み ONNX モデルを指定
+                "model/maskrcnn_backbone_rpn_quant_fix.onnx",
+                # NPU を使用して推論を実行するように指示
+                providers = ['VitisAIExecutionProvider'],
+                # NPU 実行に関するオプション
+                provider_options = [{
+                    'config_file': f"{os.environ['VAIP_CONFIG_HOME']}/vaip_config.json",
+                    'num_of_dpu_runners': 4,
+                    'cacheDir': cache_dir,
+                    'cacheKey': 'maskrcnn_backbone_rpn',
+                    'ai_analyzer_visualization': enable_analyzer,
+                    'ai_analyzer_profiling': enable_analyzer,
+                }]
+            )
 
     def forward(self, images):
         if not hasattr(self, 'session'):

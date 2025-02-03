@@ -16,13 +16,15 @@ output_model_path = "./model/maskrcnn_backbone_rpn_quant.onnx"
 class MyCalibrationDataReader(CalibrationDataReader):
     def __init__(self):
         super().__init__()
-        self.paths = glob.glob("./model_io/*/input_backbone.npy")
+        self.paths = glob.glob("./calib_data/*/input_backbone.npy")
         self.index = 0
         print(self.paths)
 
     def get_next(self) -> dict:
-        if self.index < len(self.paths):
-            return np.load(self.paths[self.index])
+        if self.index < len(self.paths) and self.index < 8:
+            next_index = self.index
+            self.index += 1
+            return {'input': np.load(self.paths[next_index])}
         else:
             return None
 
