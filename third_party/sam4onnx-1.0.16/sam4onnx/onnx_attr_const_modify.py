@@ -310,6 +310,9 @@ def modify(
                 f'The OP specified in op_name did not exist in the graph.'
             )
             sys.exit(1)
+    
+    if isinstance(node_subject_to_change, list):
+        node_subject_to_change = node_subject_to_change[0]
 
     # Updating Attributes
     # attributes = {"alpha": 1.0, "beta": 1.0, "transA": 0, "transB": 0}

@@ -9,6 +9,7 @@ import numpy as np
 import torch
 from torch import nn, Tensor
 import onnxruntime
+from tqdm import tqdm
 
 from torchvision.models.detection import maskrcnn_resnet50_fpn_v2, MaskRCNN_ResNet50_FPN_V2_Weights
 from torchvision.models.detection.rpn import concat_box_prediction_layers
@@ -66,7 +67,7 @@ class MaskRCNNBackbone(nn.Module):
         self.model = model
 
         if args.onnx_backbone is not None:
-            self.session = create_session(args.onnx_ep, args.onnx_backbone, "maskrcnn_backbone")
+            self.session = create_session(args.onnx_ep, args.onnx_backbone, "maskrcnn_backbone", num_of_dpu_runners=2)
 
     def forward(self, images):
         if not hasattr(self, 'session'):
@@ -186,7 +187,7 @@ class MaskRCNNBoxPredictor(nn.Module):
         self.model = model
 
         if args.onnx_box_predictor is not None:
-            self.session = create_session(args.onnx_ep, args.onnx_box_predictor, "maskrcnn_box_predictor")
+            self.session = create_session(args.onnx_ep, args.onnx_box_predictor, "maskrcnn_box_predictor", num_of_dpu_runners=1)
 
     def forward(self, box_features):
         if not hasattr(self, 'session'):
@@ -224,7 +225,7 @@ class MaskRCNNMaskPredictor(nn.Module):
         self.model = model
 
         if args.onnx_mask_predictor is not None:
-            self.session = create_session(args.onnx_ep, args.onnx_mask_predictor, "maskrcnn_mask_predictor")
+            self.session = create_session(args.onnx_ep, args.onnx_mask_predictor, "maskrcnn_mask_predictor", num_of_dpu_runners=1)
 
     def forward(self, mask_features):
         if not hasattr(self, 'session'):
@@ -325,16 +326,16 @@ class CustomMaskRCNN(nn.Module):
         self.timer_mask_predictor.reset()
         self.timer_mask_postprocess.reset()
 
-    def print(self):
+    def print(self, test_num=1):
         print("\nTime:")
-        self.timer_preprocess.print()
-        self.timer_backbone.print()
-        self.timer_box_proposal.print()
-        self.timer_box_predictor.print()
-        self.timer_box_postprocess.print()
-        self.timer_mask_proposal.print()
-        self.timer_mask_predictor.print()
-        self.timer_mask_postprocess.print()
+        self.timer_preprocess.print(test_num)
+        self.timer_backbone.print(test_num)
+        self.timer_box_proposal.print(test_num)
+        self.timer_box_predictor.print(test_num)
+        self.timer_box_postprocess.print(test_num)
+        self.timer_mask_proposal.print(test_num)
+        self.timer_mask_predictor.print(test_num)
+        self.timer_mask_postprocess.print(test_num)
     
     def forward(self, images, img_infos):
         ids = [info['id'] for info in img_infos]
@@ -456,9 +457,9 @@ class CustomMaskRCNN(nn.Module):
                     input_names=['box_features'],
                     output_names=['class_logits', 'box_regression'],
                     dynamic_axes={
-                        #'box_features': {0: 'proposal_size'},
-                        #'class_logits': {0: 'proposal_size'},
-                        #'box_regression': {0: 'proposal_size'},
+                        'box_features': {0: 'proposal_size'},
+                        'class_logits': {0: 'proposal_size'},
+                        'box_regression': {0: 'proposal_size'},
                     })
 
         # Box postprocess
@@ -629,8 +630,8 @@ def main(args):
         if args.warm_up:
             pred = model(input, img_infos)[0]
             model.reset()
-
-        for _ in range(args.test_num):
+        
+        for _ in tqdm(range(args.test_num), desc="Processing batches"):
             pred = model(input, img_infos)[0]
 
     # 測定した実行時間を出力
@@ -689,5 +690,6 @@ if __name__ == '__main__':
     args.save_io_dir = None
 
     assert not (args.export and (args.onnx_backbone or args.onnx_box_predictor or args.onnx_mask_predictor))
+    assert args.test_num > 0
 
     main(args)

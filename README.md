@@ -58,32 +58,47 @@ python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./mod
 
 ### モデルを量子化する
 
-各ONNXモデルの入力に相当する中間データをキャリブレーションデータとして使用してモデルを量子化します。
+各ONNXモデルの入力に相当する中間データをキャリブレーションデータとして使用してモデルを量子化します。メモリ使用率が100%近くなってしまう場合は`--max_samples`オプションの数値を調整してください。
 
 ```sh
-python quantize_vai.py input_backbone ./model/maskrcnn_backbone.onnx ./model/maskrcnn_backbone_quant.onnx
-python quantize_vai.py box_features ./model/maskrcnn_box_predictor.onnx ./model/maskrcnn_box_predictor_quant.onnx
-python quantize_vai.py mask_features ./model/maskrcnn_mask_predictor.onnx ./model/maskrcnn_mask_predictor_quant.onnx
+python quantize_vai.py ./model/maskrcnn_backbone.onnx ./model/maskrcnn_backbone_quant.onnx  --data input_backbone --name input --max_samples 6
+python quantize_vai.py ./model/maskrcnn_box_predictor.onnx ./model/maskrcnn_box_predictor_quant.onnx --data box_features --name box_features --batch_size 1000
+python quantize_vai.py ./model/maskrcnn_mask_predictor.onnx ./model/maskrcnn_mask_predictor_quant.onnx --data mask_features --name mask_features --batch_size 100
 ```
 
 ### 量子化したモデルを使用してCPUで推論する
 
-量子化の影響により元のモデルとは異なる出力となります。`--onnx_ep`オプションにcpuを指定しているためCPUで実行されます。10回実行したときの平均の実行時間が出力されます。mask_predictorの実行時間は検出数によって変化します。
+量子化の影響により元のモデルとは異なる出力となります。`--onnx_ep`オプションにcpuを指定しているためCPUで実行されます。量子化による影響で検出数も変化するため期待値比較がエラーになる場合があります。
 
 ```sh
-python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep cpu --warm_up --test_num 10
+python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep cpu
 ```
 
 ### 量子化したモデルを使用してNPUで推論する
 
+10回実行したときの平均の実行時間が出力されます。mask_predictorの実行時間は検出数によって変化します。
+
+> [!NOTE]
+> なぜかエラーが出てしまいbox_predictorとmask_predictorをNPU実行できないため、以下ではbackboneのみNPU実行しています。
+
 ```sh
-python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep npu --warm_up --test_num 10
+python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_ep vai --warm_up --test_num 10
 ```
+
+<details>
+<summary>box_predictorとmask_predictorもNPU実行するときはこちらのコマンドを使用します。</summary>
+```sh
+python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep vai --warm_up --test_num 10
+```
+</details>
+
+> [!NOTE]
+> NPU推論する際にモデルをコンパイルする処理が自動で走るため初回は時間がかかります。コンパイルした結果は`cache`ディレクトリ以下にキャッシュされ、次回以降はコンパイルは省略されます。古いキャッシュが残っている場合や`enable_analyzer`を切り替えたときは手動でキャッシュを削除してください。
 
 ### 量子化したモデルの精度を評価する
 
 ```sh
-python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_dir SOMEWHERE/val2017 --batch_size 1 --num_workers 1 --max_samples 100 --device cpu --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep npu
+python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_dir SOMEWHERE/val2017 --batch_size 1 --num_workers 1 --max_samples 100 --device cpu --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_ep vai
 ```
 
 `--max_samples`オプションを削除するとすべてのValidationデータで評価を行います。
