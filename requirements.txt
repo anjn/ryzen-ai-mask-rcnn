@@ -7,8 +7,9 @@ torchvision
 tqdm
 
 onnxsim
-sam4onnx
 ssc4onnx
 onnx2json
 json2onnx
 jq
+
+third_party/sam4onnx-1.0.16
