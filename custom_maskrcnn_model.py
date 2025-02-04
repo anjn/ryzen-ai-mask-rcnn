@@ -188,6 +188,7 @@ class MaskRCNNBoxPredictor(nn.Module):
 
         if args.onnx_box_predictor is not None:
             self.session = create_session(args.onnx_ep, args.onnx_box_predictor, "maskrcnn_box_predictor", num_of_dpu_runners=1)
+            self.max_batch = 1 if args.onnx_ep == 'vai' else -1
 
     def forward(self, box_features):
         if not hasattr(self, 'session'):
@@ -195,9 +196,26 @@ class MaskRCNNBoxPredictor(nn.Module):
             class_logits, box_regression = self.model.roi_heads.box_predictor(box_features)
 
         else:
-            inputs = { 'box_features' : box_features.cpu().numpy(), }
-            output_names = [ 'class_logits', 'box_regression' ]
-            outputs = self.session.run(output_names, inputs)
+            if self.max_batch < 0:
+                inputs = { 'box_features' : box_features.cpu().numpy(), }
+                output_names = [ 'class_logits', 'box_regression' ]
+                outputs = self.session.run(output_names, inputs)
+
+            else:
+                outputs = None
+                input_shape = (1, *box_features.shape[1:])
+
+                for i in range(box_features.shape[0]):
+                    inputs = { 'box_features' : np.reshape(box_features[i].cpu().numpy(), input_shape), }
+                    output_names = [ 'class_logits', 'box_regression' ]
+                    batch_outputs = self.session.run(output_names, inputs)
+                    if outputs is None:
+                        outputs = [
+                            np.empty((box_features.shape[0], *batch_outputs[0].shape[1:]), dtype=np.float32),
+                            np.empty((box_features.shape[0], *batch_outputs[1].shape[1:]), dtype=np.float32),
+                        ]
+                    outputs[0][i] = batch_outputs[0][0]
+                    outputs[1][i] = batch_outputs[1][0]
 
             device = box_features.device
             outputs = [torch.from_numpy(o).to(device) for o in outputs]
@@ -226,6 +244,7 @@ class MaskRCNNMaskPredictor(nn.Module):
 
         if args.onnx_mask_predictor is not None:
             self.session = create_session(args.onnx_ep, args.onnx_mask_predictor, "maskrcnn_mask_predictor", num_of_dpu_runners=1)
+            self.max_batch = 1 if args.onnx_ep == 'vai' else -1
 
     def forward(self, mask_features):
         if not hasattr(self, 'session'):
@@ -233,9 +252,23 @@ class MaskRCNNMaskPredictor(nn.Module):
             mask_logits = self.model.roi_heads.mask_predictor(mask_features)
 
         else:
-            inputs = { 'mask_features' : mask_features.cpu().numpy(), }
-            output_names = [ 'mask_logits', ]
-            outputs = self.session.run(output_names, inputs)
+            if self.max_batch < 0:
+                inputs = { 'mask_features' : mask_features.cpu().numpy(), }
+                output_names = [ 'mask_logits', ]
+                outputs = self.session.run(output_names, inputs)
+            else:
+                outputs = None
+                input_shape = (1, *mask_features.shape[1:])
+
+                for i in range(mask_features.shape[0]):
+                    inputs = { 'mask_features' : np.reshape(mask_features[i].cpu().numpy(), input_shape), }
+                    output_names = [ 'mask_logits' ]
+                    batch_outputs = self.session.run(output_names, inputs)
+                    if outputs is None:
+                        outputs = [
+                            np.empty((mask_features.shape[0], *batch_outputs[0].shape[1:]), dtype=np.float32),
+                        ]
+                    outputs[0][i] = batch_outputs[0][0]
 
             device = mask_features.device
             outputs = [torch.from_numpy(o).to(device) for o in outputs]
@@ -606,14 +639,6 @@ def main(args):
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
 
-    # TorchVisionの学習済みモデルを読み込む
-    model = maskrcnn_resnet50_fpn_v2(
-        weights=MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT,
-    )
-
-    # 改造版のモデルを作る
-    model = CustomMaskRCNN(model, args)
-
     # 入力データを準備
     if args.input == "random":
         input = torch.rand((1, 3, 800, 1056)).to(device)
@@ -623,6 +648,16 @@ def main(args):
         input_id = int(args.input)
 
     img_infos = [{"id": input_id, "height": input.shape[2], "width": input.shape[3]} for _ in range(input.shape[0])]
+
+    # TorchVisionの学習済みモデルを読み込む
+    model = maskrcnn_resnet50_fpn_v2(
+        weights=MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT,
+        min_size=min(*input.shape[2:4]),
+        max_size=max(*input.shape[2:4]),
+    )
+
+    # 改造版のモデルを作る
+    model = CustomMaskRCNN(model, args)
 
     # 推論を実行
     model = model.to(device)

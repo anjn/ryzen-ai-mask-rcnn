@@ -400,6 +400,8 @@ def main(args):
     model = maskrcnn_resnet50_fpn_v2(
         weights=MaskRCNN_ResNet50_FPN_V2_Weights.DEFAULT,
         box_score_thresh=args.score_threshold,
+        min_size=min(*args.fix_input_size) if args.fix_input_size is not None else 800,
+        max_size=max(*args.fix_input_size) if args.fix_input_size is not None else 1333,
         rpn_post_nms_top_n_test=1000,   # Number of proposals after NMS
         box_detections_per_img=100,     # Maximum detections per image
         rpn_pre_nms_top_n_test=1000,    # Number of proposals before NMS

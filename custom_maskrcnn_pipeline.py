@@ -19,21 +19,21 @@ from custom_maskrcnn_model import CodeTimer, CustomMaskRCNN
 from coco_utils import COCOEvalDataset, coco_collate_fn, get_coco_category_mapping, get_coco_label_mapping
 
 
-def preprocess_func(img_org, frame_id, device):
+def preprocess_func(img_org, frame_id, device, input_size):
     # BGR to RGB
     img_rgb = cv2.cvtColor(img_org, cv2.COLOR_BGR2RGB)
 
     # Scale (fit to width)
     org_size = img_rgb.shape[0:2]
-    scale = 960 / org_size[1]
-    new_size = (960, int(org_size[0] * scale))
+    scale = input_size[1] / org_size[1]
+    new_size = (input_size[1], int(org_size[0] * scale))
     img_rgb = cv2.resize(img_rgb, new_size)
 
     # Letterbox
     src_size = img_rgb.shape[0:2]
-    dst_size = [540, 960]
+    dst_size = input_size
     assert src_size[1] == dst_size[1]
-    letterbox = [range((d-s)//2, s + (d-s)//2) for s,d in zip(src_size, dst_size)]
+    letterbox = [range(max((d-s)//2, 0), min(s + (d-s)//2, input_size[0])) for s,d in zip(src_size, dst_size)]
 
     # Normalize
     mean = [0.485, 0.456, 0.406]
@@ -62,16 +62,16 @@ class NoOutputException(Exception):
     pass
 
 
-def sort_frame_func(img_info, prepro_info, img, features, objectness, pred_bbox_deltas):
+def sort_frame_func(*args):
     if not hasattr(sort_frame_func, 'init'):
         sort_frame_func.buffer = []
         sort_frame_func.next_frame = 0
         sort_frame_func.init = True
 
-    sort_frame_func.buffer.append((img_info, prepro_info, img, features, objectness, pred_bbox_deltas))
+    sort_frame_func.buffer.append(args)
 
     for i, item in enumerate(sort_frame_func.buffer):
-        if item[1] == sort_frame_func.next_frame:
+        if item[0][1] == sort_frame_func.next_frame:
             sort_frame_func.next_frame += 1
             del sort_frame_func.buffer[i]
             return item
@@ -150,13 +150,13 @@ def visualize_func(img_info, prepro_info, detections, args, label_mapping):
         mask_overlay = cv2.bitwise_and(mask_overlay, mask_overlay, mask=mask_np.astype(np.uint8))
         img_org = cv2.addWeighted(img_org, 1, mask_overlay, 0.5, 0)
 
-    return (img_org, )
+    return ((img_org, frame_id), )
 
 
 def run_task(task_func, input_queue, output_queue, args=()):
     while True:
         try:
-            inputs = input_queue.get(timeout=3) # 3 sec
+            inputs = input_queue.get(timeout=10) # 10 sec
             outputs = task_func(*inputs, *args)
             output_queue.put(outputs)
         except NoOutputException:
@@ -173,6 +173,31 @@ def start_threads(task_func, input_queue, output_queue, args=(), num_threads=1):
         thr.start()
         threads.append(thr)
     return threads
+
+
+class MaskRCNNPipeline:
+    def __init__(self, model, device, args, label_mapping):
+        self.pre_q        = queue.Queue(maxsize=1)
+        self.backbone_q   = queue.Queue(maxsize=1)
+        self.other_q      = queue.Queue(maxsize=1)
+        self.visualize_q  = queue.Queue(maxsize=1)
+        self.sort_q       = queue.Queue(maxsize=0) # set maxsize > 0 will cause deadlock when exiting app
+        self.output_q     = queue.Queue(maxsize=0)
+
+        start_threads(preprocess_func, self.pre_q, self.backbone_q, (device, args.input_size), num_threads=1)
+        start_threads(backbone_func, self.backbone_q, self.other_q, (model,), num_threads=2)
+        start_threads(other_func, self.other_q, self.visualize_q, (model,), num_threads=4)
+        start_threads(visualize_func, self.visualize_q, self.sort_q, (args, label_mapping), num_threads=1)
+        start_threads(sort_frame_func, self.sort_q, self.output_q, num_threads=1)
+
+        self.frame_count = 0
+    
+    def put(self, frame):
+        self.pre_q.put((frame, self.frame_count))
+        self.frame_count += 1
+
+    def get(self):
+        return self.output_q.get(block=False)[0]
 
 
 # https://stackoverflow.com/a/54539292
@@ -227,17 +252,25 @@ def main(args):
 
     img_org = cv2.imread("sample/dance.jpg")
 
-    with CodeTimer("preprocess", True):
-        outputs = preprocess_func(img_org, 0, device)
+    if args.pipeline:
+        pipeline = MaskRCNNPipeline(model, device, args, label_mapping)
+        pipeline.put(img_org)
+        outputs = None
+        while outputs == None:
+            try:
+                outputs = pipeline.get()
+            except queue.Empty:
+                time.sleep(0.01)
 
-    with CodeTimer("backbone", True):
-        outputs = backbone_func(*outputs, model)
-
-    with CodeTimer("other", True):
-        outputs = other_func(*outputs, model)
-
-    with CodeTimer("visualize", True):
-        outputs = visualize_func(*outputs, args, label_mapping)
+    else:
+        with CodeTimer("preprocess", True):
+            outputs = preprocess_func(img_org, 0, device, args.input_size)
+        with CodeTimer("backbone", True):
+            outputs = backbone_func(*outputs, model)
+        with CodeTimer("other", True):
+            outputs = other_func(*outputs, model)
+        with CodeTimer("visualize", True):
+            outputs = visualize_func(*outputs, args, label_mapping)
 
     cv2.imwrite("output.jpg", outputs[0])
     
@@ -250,6 +283,10 @@ if __name__ == '__main__':
                       help='Score threshold for visualization (default: 0.3)')
     parser.add_argument('--device', type=str, default='cpu',
                       help='')
+    parser.add_argument('--pipeline', action='store_true',
+                      help='Enable pipeline')
+    parser.add_argument('--input_size', type=int, default=[544, 960], nargs=2,
+                    help='Model input size')
     parser.add_argument('--onnx_backbone', type=str, default=None,
                       help='')
     #parser.add_argument('--onnx_box_proposal', type=str, default=None,

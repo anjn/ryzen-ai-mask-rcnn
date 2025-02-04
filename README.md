@@ -20,10 +20,10 @@ pip install -r ./requirements.txt
 
 ### モデルを実行してキャリブレーションデータを生成する
 
-データセットのパスを指定して、8サンプル分のキャリブレーションデータを生成します。次の例では入力画像サイズを高さ540、幅960に固定しています。画像サイズの固定は必須です。
+データセットのパスを指定して、8サンプル分のキャリブレーションデータを生成します。次の例では入力画像サイズを高さ544、幅960に固定しています。画像サイズの固定は必須です。
 
 ```sh
-python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_dir SOMEWHERE/val2017 --max_samples 8 --fix_input_size 540 960 --save_io
+python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_dir SOMEWHERE/val2017 --max_samples 8 --fix_input_size 544 960 --save_io
 ```
 
 `model_io`ディレクトリ以下にモデルの入出力や中間データが保存されます。
@@ -33,7 +33,7 @@ python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_di
 キャリブレーションデータのうちひとつを入力として推論を実行しつつ、ONNXモデルを`model`ディレクトリ以下に出力します。
 
 ```sh
-python custom_maskrcnn_model.py --input 87038 --export
+python custom_maskrcnn_model.py --input 397133 --export
 ```
 
 ### ONNXモデルを最適化する
@@ -58,7 +58,7 @@ sam4onnx -if ./model/maskrcnn_backbone.onnx -of ./model/maskrcnn_backbone.onnx -
 キャリブレーションデータを期待値として、出力の差分の絶対値が一定値以下であれば正しく推論できているとします。
 
 ```sh
-python custom_maskrcnn_model.py --input 87038 --onnx_backbone ./model/maskrcnn_backbone.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor.onnx
+python custom_maskrcnn_model.py --input 397133 --onnx_backbone ./model/maskrcnn_backbone.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor.onnx
 ```
 
 ### モデルを量子化する
@@ -76,26 +76,22 @@ python quantize_vai.py ./model/maskrcnn_mask_predictor.onnx ./model/maskrcnn_mas
 量子化の影響により元のモデルとは異なる出力となります。`--onnx_ep`オプションにcpuを指定しているためCPUで実行されます。量子化による影響で検出数も変化するため期待値比較がエラーになる場合があります。
 
 ```sh
-python custom_maskrcnn_model.py --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep cpu
+python custom_maskrcnn_model.py --input 397133 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep cpu
 ```
 
 ### 量子化したモデルを使用してNPUで推論する
 
 10回実行したときの平均の実行時間が出力されます。mask_predictorの実行時間は検出数によって変化します。
 
-> [!NOTE]
-> なぜかエラーが出てしまいbox_predictorとmask_predictorをNPU実行できないため、以下ではbackboneのみNPU実行しています。
-
 ```sh
-python custom_maskrcnn_model.py --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_ep vai --warm_up --test_num 10
+python custom_maskrcnn_model.py --input 397133 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep vai --warm_up --test_num 10
 ```
 
-<details>
-<summary>box_predictorとmask_predictorもNPU実行するときはこちらのコマンドを使用します。</summary>
+現状、NPUでは推論をバッチで実行することができないようです。box_predictor、mask_predictorでは入力を一つずつ推論することになりオーバーヘッドが大きく、CPU実行より時間がかかります。backboneのみNPU実行する場合は次のようにします。
+
 ```sh
-python custom_maskrcnn_model.py --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep vai --warm_up --test_num 10
+python custom_maskrcnn_model.py --input 397133 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_ep vai --warm_up --test_num 10
 ```
-</details>
 
 > [!NOTE]
 > NPU推論する際にモデルをコンパイルする処理が自動で走るため初回は時間がかかります。コンパイルした結果は`cache`ディレクトリ以下にキャッシュされ、次回以降はコンパイルは省略されます。古いキャッシュが残っている場合や`enable_analyzer`を切り替えたときは手動でキャッシュを削除してください。
@@ -103,10 +99,10 @@ python custom_maskrcnn_model.py --input 87038 --onnx_backbone ./model/maskrcnn_b
 ### 量子化したモデルの精度を評価する
 
 ```sh
-python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_dir SOMEWHERE/val2017 --max_samples 100 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_ep vai
+python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_dir SOMEWHERE/val2017  --fix_input_size 544 960 --max_samples 100 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_ep vai
 ```
 
-`--max_samples`オプションを削除するとすべてのValidationデータで評価を行います。
+すべてのValidationデータで評価を行う場合は、`--max_samples`オプションに5000を指定します。
 
 ## 参考
 
