@@ -1,20 +1,96 @@
+## 概要
 
-バックボーンやヘッドなど単純なCNN構造の処理と、制御構造やリスト操作などNPUでの実行に不向きな処理を分離します。例えば以下のような処理はNPUには不向きです。
+バックボーンや予測器など単純なCNN構造の部分と、制御構造やリスト操作などNPUでの実行に不向きな処理を含む部分を分離し、CNN部分のみをNPUで実行します。
 
-- [MultiScaleRoIAlign](https://github.com/pytorch/vision/blob/867521ec82c78160b16eec1c3a02d4cef93723ff/torchvision/ops/poolers.py#L230)
+## Mask-RCNNをNPUで実行する手順
 
-ONNX変換時にバッチサイズを1に固定します。次の理由があります。
+> [!IMPORTANT]
+> 以下はConda環境`ryzen-ai-1.3.0`で実行してください。
 
-- Resize (interpolate) オペレータがあり、バッチサイズが不定のとき正しく形状を推論できません。
-- NPU では複数のコアを並列に動作させたときに最も効率が良くなります。バッチを大きくしても効率は上がりません（要確認）
+### 必要なパッケージをインストールする
 
-HWについては固定することを強くおすすめします。
+```sh
+pip install -r ./requirements.txt
+```
 
-作業方針
-- モデル全体をONNXで出力
-- 前処理を削除（NPU推論時にはnumpyで処理する）
-- backbone+rpn、boxまで、box、maskまで、mask、残り、の5つに分解する
-- 形状を確定させる、もしくはバッチにする
+### モデルを実行してキャリブレーションデータを生成する
+
+データセットのパスを指定して、8サンプル分のキャリブレーションデータを生成します。
+
+```sh
+python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_dir SOMEWHERE/val2017 --batch_size 1 --num_workers 1 --max_samples 8 --device cpu --save_io
+```
+
+`model_io`ディレクトリ以下にモデルの入出力や中間データが保存されます。
+
+### モデルからNPU実行する部分を切り出して出力する
+
+キャリブレーションデータのうちひとつを入力として推論を実行しつつ、ONNXモデルを`model`ディレクトリ以下に出力します。
+
+```sh
+python custom_maskrcnn_model.py --device cpu --input 87038 --export
+```
+
+### ONNXモデルを最適化する
+
+```sh
+python simplify.py ./model/maskrcnn_backbone.onnx ./model/maskrcnn_backbone.onnx
+python simplify.py ./model/maskrcnn_box_predictor.onnx ./model/maskrcnn_box_predictor.onnx
+python simplify.py ./model/maskrcnn_mask_predictor.onnx ./model/maskrcnn_mask_predictor.onnx
+```
+
+### バックボーンモデルのMaxPoolをNPU実行できるように修正する
+
+カーネルサイズ1x1のMaxPoolはNPUで実行不可のため、3x3に変更する。出力のshapeが変わってしまわないようにpadsも変更する。
+（カーネルサイズを変更してしまうと処理結果に影響がありそうに思うが、精度への影響はほとんどない模様）
+
+```sh
+sam4onnx -if ./model/maskrcnn_backbone.onnx -of ./model/maskrcnn_backbone.onnx -on /backbone/fpn/extra_blocks/MaxPool --attributes kernel_shape int64 [3,3] --attributes pads int64 [1,1,1,1]
+```
+
+### 変換したONNXモデルを使って正しく推論できることを確認する
+
+キャリブレーションデータを期待値として、出力の差分の絶対値が一定値以下であれば正しく推論できているとする。
+
+```sh
+python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./model/maskrcnn_backbone.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor.onnx
+```
+
+### モデルを量子化する
+
+各ONNXモデルの入力に相当する中間データをキャリブレーションデータとして使用してモデルを量子化します。
+
+```sh
+python quantize_vai.py input_backbone ./model/maskrcnn_backbone.onnx ./model/maskrcnn_backbone_quant.onnx
+python quantize_vai.py box_features ./model/maskrcnn_box_predictor.onnx ./model/maskrcnn_box_predictor_quant.onnx
+python quantize_vai.py mask_features ./model/maskrcnn_mask_predictor.onnx ./model/maskrcnn_mask_predictor_quant.onnx
+```
+
+### 量子化したモデルを使用してCPUで推論する
+
+量子化の影響により元のモデルとは異なる出力となります。`--onnx_ep`オプションにcpuを指定しているためCPUで実行されます。10回実行したときの平均の実行時間が出力されます。mask_predictorの実行時間は検出数によって変化します。
+
+```sh
+python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep cpu --warm_up --test_num 10
+```
+
+### 量子化したモデルを使用してNPUで推論する
+
+```sh
+python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep npu --warm_up --test_num 10
+```
+
+### 量子化したモデルの精度を評価する
+
+```sh
+python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_dir SOMEWHERE/val2017 --batch_size 1 --num_workers 1 --max_samples 100 --device cpu --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep npu
+```
+
+`--max_samples`オプションを削除するとすべてのValidationデータで評価を行います。
+
+## 参考
+
+元のモデルに5000枚のValidationデータを入力したときの精度は以下です。
 
 ```
 Average Precision  (AP) @[ IoU=0.50:0.95 | area=   all | maxDets=100 ] = 0.474
@@ -48,8 +124,3 @@ Box mAP: 0.4739
 Mask mAP: 0.4172
 ```
 
-カーネルサイズ1x1のMaxPoolはNPUで実行不可のため、3x3に変更する。出力のshapeが変わってしまわないようにpadsも変更する。
-カーネルサイズを変更してしまうと処理結果に影響がありそうに思うが、精度への影響はほとんどない様子。
-```
-sam4onnx -if ./model/maskrcnn_backbone_rpn_quant.onnx -of ./model/maskrcnn_backbone_rpn_quant_fix.onnx -on /backbone/fpn/extra_blocks/MaxPool --attributes kernel_shape int64 [3,3] --attributes pads int64 [1,1,1,1]
-```

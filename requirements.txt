@@ -5,3 +5,10 @@ pycocotools
 torch
 torchvision
 tqdm
+
+onnxsim
+sam4onnx
+ssc4onnx
+onnx2json
+json2onnx
+jq

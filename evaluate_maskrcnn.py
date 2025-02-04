@@ -413,7 +413,7 @@ def main(args):
         box_bg_iou_thresh=0.5           # Box head background IoU threshold
     )
 
-    model = CustomMaskRCNN(model, save_io=args.save_io, save_io_dir=args.save_io_dir)
+    model = CustomMaskRCNN(model, args)
     
     # Print model configuration
     print("\nModel Configuration:")
@@ -426,12 +426,6 @@ def main(args):
     model = model.to(device)
     model.eval()
 
-    if isinstance(model, CustomMaskRCNN):
-        # Warm up
-        with torch.no_grad():
-            model([torch.rand((3, 800, 1056)).to(device) for _ in range(1)], [{"id": 0, "height": 800, "width": 1056}])
-        model.reset()
-
     # Evaluate model
     print(f"Evaluating model on {args.max_samples if args.max_samples else 'all'} samples...")
     box_map, mask_map = evaluate_model(model, coco_gt, device, args, category_mapping)
@@ -439,9 +433,6 @@ def main(args):
     print(f"\nResults:")
     print(f"Box mAP: {box_map:.4f}")
     print(f"Mask mAP: {mask_map:.4f}")
-
-    if isinstance(model, CustomMaskRCNN):
-        model.print()
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Evaluate Mask R-CNN model on COCO dataset')
@@ -473,6 +464,19 @@ if __name__ == '__main__':
                       help='')
     parser.add_argument('--save_io_dir', type=str, default='model_io',
                       help='')
-    
+    parser.add_argument('--onnx_backbone', type=str, default=None,
+                      help='')
+    parser.add_argument('--onnx_box_proposal', type=str, default=None,
+                      help='')
+    parser.add_argument('--onnx_box_predictor', type=str, default=None,
+                      help='')
+    parser.add_argument('--onnx_mask_predictor', type=str, default=None,
+                      help='')
+    parser.add_argument('--onnx_ep', type=str, default='cpu',
+                      help='')
     args = parser.parse_args()
+
+    args.export = False
+    args.export_dir = "."
+
     main(args)
