@@ -269,8 +269,9 @@ class MaskRCNNMaskPostProcess(nn.Module):
 
 # https://stackoverflow.com/a/52749808
 class CodeTimer:
-    def __init__(self, name):
+    def __init__(self, name, print_at_exit=False):
         self.name = name
+        self.print_at_exit = print_at_exit
         self.cuda = torch.cuda.is_available()
         self.reset()
     def __enter__(self):
@@ -281,9 +282,11 @@ class CodeTimer:
         if self.cuda:
             torch.cuda.synchronize()
         self.elapsed += time.time() - self.start
+        if self.print_at_exit:
+            self.print()
     def reset(self):
         self.elapsed = 0
-    def print(self, test_num):
+    def print(self, test_num=1):
         print(f"{self.name} : {self.elapsed/test_num:.3f} sec")
 
 

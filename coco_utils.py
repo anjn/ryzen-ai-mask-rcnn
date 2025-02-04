@@ -92,3 +92,16 @@ def get_coco_category_mapping(coco_gt):
     
     return model_to_coco_id
 
+def get_coco_label_mapping(coco_gt):
+    # Get COCO category information
+    cats = coco_gt.loadCats(coco_gt.getCatIds())
+    coco_id_to_name = {cat['id']: cat['name'] for cat in cats}
+
+    category_mapping = get_coco_category_mapping(coco_gt)
+
+    model_to_coco_label = {}
+    for model_id, coco_id in category_mapping.items():
+        model_to_coco_label[model_id] = coco_id_to_name[coco_id]
+    
+    return model_to_coco_label
+

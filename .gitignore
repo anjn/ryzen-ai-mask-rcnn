@@ -16,3 +16,5 @@ __pycache__
 /vitisai_ep_report.json
 /xrt.run_summary
 /aianalyzer.log
+
+/output.jpg
