@@ -229,15 +229,12 @@ def evaluate_model(model, coco_gt, device, args, category_mapping):
     print(f"Score threshold: {args.score_threshold}")
     print(f"Max samples: {args.max_samples}")
     print(f"Batch size: {args.batch_size}")
-
-    fix_input_resolution = True
-    input_resolution = (800, 1056)
+    print(f"Fix input size: {args.fix_input_size}")
 
     # Create dataset and dataloader
     preprocess_transforms = MaskRCNN_ResNet50_FPN_V2_Weights.COCO_V1.transforms()
     dataset = COCOEvalDataset(coco_gt, args.img_dir, transforms=preprocess_transforms,
-                              resize=input_resolution if fix_input_resolution else None,
-                              )
+                              resize=args.fix_input_size)
     
     if args.max_samples is not None:
         dataset.img_ids = dataset.img_ids[:args.max_samples]
@@ -455,11 +452,13 @@ if __name__ == '__main__':
     parser.add_argument('--visualize_threshold', type=float, default=0.5,
                       help='Score threshold for visualization (default: 0.5)')
     parser.add_argument('--batch_size', type=int, default=1,
-                      help='Batch size for evaluation (default: 4)')
+                      help='Batch size for evaluation (default: 1)')
     parser.add_argument('--num_workers', type=int, default=1,
-                      help='Number of worker processes for data loading (default: 4)')
-    parser.add_argument('--device', type=str, default=None,
+                      help='Number of worker processes for data loading (default: 1)')
+    parser.add_argument('--device', type=str, default="cpu",
                       help='')
+    parser.add_argument('--fix_input_size', type=int, default=None, nargs=2,
+                    help='')
     parser.add_argument('--save_io', action='store_true',
                       help='')
     parser.add_argument('--save_io_dir', type=str, default='model_io',

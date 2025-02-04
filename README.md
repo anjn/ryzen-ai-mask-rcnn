@@ -13,12 +13,17 @@
 pip install -r ./requirements.txt
 ```
 
+### COCOデータセットをダウンロードし展開する
+
+- http://images.cocodataset.org/zips/val2017.zip
+- http://images.cocodataset.org/annotations/annotations_trainval2017.zip
+
 ### モデルを実行してキャリブレーションデータを生成する
 
-データセットのパスを指定して、8サンプル分のキャリブレーションデータを生成します。
+データセットのパスを指定して、8サンプル分のキャリブレーションデータを生成します。次の例では入力画像サイズを高さ540、幅960に固定しています。画像サイズの固定は必須です。
 
 ```sh
-python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_dir SOMEWHERE/val2017 --batch_size 1 --num_workers 1 --max_samples 8 --device cpu --save_io
+python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_dir SOMEWHERE/val2017 --max_samples 8 --fix_input_size 540 960 --save_io
 ```
 
 `model_io`ディレクトリ以下にモデルの入出力や中間データが保存されます。
@@ -28,7 +33,7 @@ python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_di
 キャリブレーションデータのうちひとつを入力として推論を実行しつつ、ONNXモデルを`model`ディレクトリ以下に出力します。
 
 ```sh
-python custom_maskrcnn_model.py --device cpu --input 87038 --export
+python custom_maskrcnn_model.py --input 87038 --export
 ```
 
 ### ONNXモデルを最適化する
@@ -41,8 +46,8 @@ python simplify.py ./model/maskrcnn_mask_predictor.onnx ./model/maskrcnn_mask_pr
 
 ### バックボーンモデルのMaxPoolをNPU実行できるように修正する
 
-カーネルサイズ1x1のMaxPoolはNPUで実行不可のため、3x3に変更する。出力のshapeが変わってしまわないようにpadsも変更する。
-（カーネルサイズを変更してしまうと処理結果に影響がありそうに思うが、精度への影響はほとんどない模様）
+カーネルサイズ1x1のMaxPoolはNPUで実行不可のため3x3に変更します。出力のshapeが変わってしまわないようにpadsも変更します。
+（カーネルサイズを変更してしまうと処理結果に影響がありそうに思いますが精度への影響はほとんどない模様）
 
 ```sh
 sam4onnx -if ./model/maskrcnn_backbone.onnx -of ./model/maskrcnn_backbone.onnx -on /backbone/fpn/extra_blocks/MaxPool --attributes kernel_shape int64 [3,3] --attributes pads int64 [1,1,1,1]
@@ -50,10 +55,10 @@ sam4onnx -if ./model/maskrcnn_backbone.onnx -of ./model/maskrcnn_backbone.onnx -
 
 ### 変換したONNXモデルを使って正しく推論できることを確認する
 
-キャリブレーションデータを期待値として、出力の差分の絶対値が一定値以下であれば正しく推論できているとする。
+キャリブレーションデータを期待値として、出力の差分の絶対値が一定値以下であれば正しく推論できているとします。
 
 ```sh
-python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./model/maskrcnn_backbone.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor.onnx
+python custom_maskrcnn_model.py --input 87038 --onnx_backbone ./model/maskrcnn_backbone.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor.onnx
 ```
 
 ### モデルを量子化する
@@ -71,7 +76,7 @@ python quantize_vai.py ./model/maskrcnn_mask_predictor.onnx ./model/maskrcnn_mas
 量子化の影響により元のモデルとは異なる出力となります。`--onnx_ep`オプションにcpuを指定しているためCPUで実行されます。量子化による影響で検出数も変化するため期待値比較がエラーになる場合があります。
 
 ```sh
-python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep cpu
+python custom_maskrcnn_model.py --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep cpu
 ```
 
 ### 量子化したモデルを使用してNPUで推論する
@@ -82,13 +87,13 @@ python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./mod
 > なぜかエラーが出てしまいbox_predictorとmask_predictorをNPU実行できないため、以下ではbackboneのみNPU実行しています。
 
 ```sh
-python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_ep vai --warm_up --test_num 10
+python custom_maskrcnn_model.py --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_ep vai --warm_up --test_num 10
 ```
 
 <details>
 <summary>box_predictorとmask_predictorもNPU実行するときはこちらのコマンドを使用します。</summary>
 ```sh
-python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep vai --warm_up --test_num 10
+python custom_maskrcnn_model.py --input 87038 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_box_predictor ./model/maskrcnn_box_predictor_quant.onnx --onnx_mask_predictor ./model/maskrcnn_mask_predictor_quant.onnx --onnx_ep vai --warm_up --test_num 10
 ```
 </details>
 
@@ -98,7 +103,7 @@ python custom_maskrcnn_model.py --device cpu --input 87038 --onnx_backbone ./mod
 ### 量子化したモデルの精度を評価する
 
 ```sh
-python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_dir SOMEWHERE/val2017 --batch_size 1 --num_workers 1 --max_samples 100 --device cpu --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_ep vai
+python evaluate_maskrcnn.py --ann_file SOMEWHERE/instances_val2017.json --img_dir SOMEWHERE/val2017 --max_samples 100 --onnx_backbone ./model/maskrcnn_backbone_quant.onnx --onnx_ep vai
 ```
 
 `--max_samples`オプションを削除するとすべてのValidationデータで評価を行います。

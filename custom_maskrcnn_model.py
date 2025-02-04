@@ -662,7 +662,7 @@ def main(args):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='Evaluate Mask R-CNN model on COCO dataset')
-    parser.add_argument('--device', type=str, default=None,
+    parser.add_argument('--device', type=str, default='cpu',
                       help='')
     parser.add_argument('--input', type=str, default='random',
                       help='')
